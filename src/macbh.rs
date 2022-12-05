@@ -1,4 +1,5 @@
-// Atmel MACB Ethernet Controller driver
+//cadence/macb.h
+//Atmel MACB Ethernet Controller driver
 
 pub const MACB_GREGS_NBR: u64 = 16;
 pub const MACB_GREGS_VERSION: u64 = 2;
@@ -891,3 +892,4 @@ static inline bool gem_has_ptp(struct macb *bp)
     return !!(bp->caps & MACB_CAPS_GEM_HAS_PTP);
 }
 */
+

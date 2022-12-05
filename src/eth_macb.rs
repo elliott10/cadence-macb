@@ -13,26 +13,13 @@ pub const PRCI_PROCMONCFG_OFFSET: u64 = 0xF0;
 pub const PRCI_PROCMONCFG_CORE_CLOCK_MASK: u64 = 1 << 24;
 
 pub const MACB_IOBASE: u64 = 0x10090000;
+pub const GEMGXL_BASE: u64 = 0x100a0000;
 pub const PRCI_BASE: u64 = 0x10000000;
-
-/*
- * These buffer sizes must be power of 2 and divisible
- * by RX_BUFFER_MULTIPLE
- */
-pub const MACB_RX_BUFFER_SIZE: u64 = 128;
-pub const GEM_RX_BUFFER_SIZE: u64 = 2048;
-pub const RX_BUFFER_MULTIPLE: u64 = 64;
-
-pub const MACB_RX_RING_SIZE: u64 = 32;
-pub const MACB_TX_RING_SIZE: u64 = 16;
-
-pub const MACB_TX_TIMEOUT: u64 = 1000;
-pub const MACB_AUTONEG_TIMEOUT: u64 = 5000000;
 
 /// Memory functions that drivers must use
 pub trait MemMapping {
     /// Page size (usually 4K)
-    const PAGE_SIZE: usize;
+    const PAGE_SIZE: usize = 4096;
 
     /// Allocate consequent physical memory for DMA;
     /// Return physical address which is page aligned.
@@ -135,93 +122,6 @@ fn macb_eth_initialize() {
 
     // dma alloc
 
-    // todo 为DMA构建环形缓冲区内存
-    // dma_alloc_coherent  申请一致性内存，一般为连续物理内存且不cache, 或dcache line对齐
-
-    /*
-    let (send_ring_va, send_ring_pa) = P::alloc_dma(P::PAGE_SIZE);
-    let (recv_ring_va, recv_ring_pa) = P::alloc_dma(P::PAGE_SIZE);
-    let send_ring = unsafe {
-        slice::from_raw_parts_mut(
-            send_ring_va as *mut DmaDesc,
-            P::PAGE_SIZE / size_of::<DmaDesc>(), // 4096/16 = 256 个 dma_desc
-        )
-    };
-
-    let recv_ring = unsafe {
-        slice::from_raw_parts_mut(
-            recv_ring_va as *mut DmaDesc,
-            P::PAGE_SIZE / size_of::<DmaDesc>(),
-        )
-    };
-
-    send_ring.fill(DmaDesc {
-        desc0: 0,
-        desc1: 0,
-        desc2: 0,
-        desc3: 0,
-    });
-    recv_ring.fill(DmaDesc {
-        desc0: 0,
-        desc1: 0,
-        desc2: 0,
-        desc3: 0,
-    });
-
-    let mut send_buffers = Vec::with_capacity(send_ring.len());
-    let mut recv_buffers = Vec::with_capacity(recv_ring.len());
-
-    info!("Set a ring desc buffer for TX");
-    // Set a ring desc buffer for TX
-    for i in 0..send_ring.len() {
-        let (buffer_page_va, buffer_page_pa) = P::alloc_dma(P::PAGE_SIZE); // 其实buffer申请2K左右就可以
-
-        // desc1.all |= (1 << 24) Chain mode
-        send_ring[i].desc1 |= 1 << 24;
-
-        send_ring[i].desc2 = buffer_page_pa as u32;
-
-        if (i + 1) == send_ring.len() {
-            send_ring[i].desc3 = virt_to_phys(&send_ring[0] as *const DmaDesc as usize) as u32;
-        } else {
-            send_ring[i].desc3 = virt_to_phys(&send_ring[i + 1] as *const DmaDesc as usize) as u32;
-        }
-
-        send_buffers.push(buffer_page_va);
-    }
-
-    info!("Set a ring desc buffer for RX");
-    // Set a ring desc buffer for RX
-    for i in 0..recv_ring.len() {
-        let (buffer_page_va, buffer_page_pa) = P::alloc_dma(P::PAGE_SIZE);
-
-        recv_ring[i].desc1 |= 1 << 24;
-        //recv_ring[i].desc2 = buffer_page_pa as u32;
-        if (i + 1) == recv_ring.len() {
-            recv_ring[i].desc3 = virt_to_phys(&recv_ring[0] as *const DmaDesc as usize) as u32;
-        } else {
-            recv_ring[i].desc3 = virt_to_phys(&recv_ring[i + 1] as *const DmaDesc as usize) as u32;
-        }
-
-        recv_buffers.push(buffer_page_va);
-
-        // geth_rx_refill, 实际运行refill时却是：priv->rx_clean: 0 ~ 254 ?
-        // desc_buf_set(&mut recv_ring[i], buffer_page_pa as u32, MAX_BUF_SZ);
-        recv_ring[i].desc1 &= !((1 << 11) - 1);
-        recv_ring[i].desc1 |= MAX_BUF_SZ & ((1 << 11) - 1);
-        recv_ring[i].desc2 = buffer_page_pa as u32;
-
-        // sync memery, fence指令？
-
-        desc_set_own(&mut recv_ring[i]);
-    }
-
-    info!(
-        "send_buffers length: {}, recv_buffers length: {}",
-        send_buffers.len(),
-        recv_buffers.len()
-    );
-    */
 
     // Do some basic initialization so that we at least can talk to the PHY
     let pclk_rate = 125125000;
@@ -255,52 +155,6 @@ fn macb_write_hwaddr(enetaddr: &[u8; 6]) -> i32 {
       info!("macb_write_hwaddr {:#x} {:#x}", hwaddr_top, hwaddr_bottom);
 
       0
-}
-
-pub fn macb_mdio_write(phy_adr: u8, reg: u8, value: u16) {
-    let mut netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
-    netctl |= 1 << MACB_MPE_OFFSET;
-    writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
-
-    // MACB_BF(name,value) 
-    // (((value) & ((1 << MACB_x_SIZE) - 1)) << MACB_x_OFFSET)
-
-    let frame: u64 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
-                    | ((1 & ((1 << MACB_RW_SIZE) - 1)) << MACB_RW_OFFSET)
-                    | ((phy_adr as u64 & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
-                    | ((reg as u64 & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
-                    | ((2 & ((1 << MACB_CODE_SIZE) - 1)) << MACB_CODE_OFFSET)
-                    | ((value as u64 & ((1 << MACB_DATA_SIZE) - 1)) << MACB_DATA_OFFSET);
-
-    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame as u32);
-    while (readv((MACB_IOBASE + MACB_NSR) as *const u32) & (1 << MACB_IDLE_OFFSET)) == 0 {}
-
-    netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
-    netctl &= !(1 << MACB_MPE_OFFSET);
-    writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
-}
-
-pub fn macb_mdio_read(phy_adr: u8, reg: u8, value: u16) -> u16 {
-    let mut netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
-    netctl |= 1 << MACB_MPE_OFFSET;
-    writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
-
-    let mut frame: u64 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
-                    | ((2 & ((1 << MACB_RW_SIZE) - 1)) << MACB_RW_OFFSET)
-                    | ((phy_adr as u64 & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
-                    | ((reg as u64 & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
-                    | ((2 & ((1 << MACB_CODE_SIZE) - 1)) << MACB_CODE_OFFSET);
-
-    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame as u32);
-    while (readv((MACB_IOBASE + MACB_NSR) as *const u32) & (1 << MACB_IDLE_OFFSET)) == 0 {}
-
-    frame = readv((MACB_IOBASE + MACB_MAN) as *const u32) as u64;
-
-    netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
-    netctl &= !(1 << MACB_MPE_OFFSET);
-    writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
-
-    ((frame >> MACB_DATA_OFFSET) & ((1 << MACB_DATA_SIZE) - 1)) as u16
 }
 
 /*
