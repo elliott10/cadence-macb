@@ -74,7 +74,35 @@ pub enum PhyInterfaceMode {
     COUNT = 27,
 }
 
-struct macb_config {
+struct MacbDevice {
+	regs: u64, //MACB_IOBASE
+	is_big_endian: bool,
+	config: MacbConfig,
+
+		rx_tail: u32,
+		tx_head: u32,
+		tx_tail: u32,
+		next_rx_tail: u32,
+		wrapped: bool,
+    /*
+	void			*rx_buffer;
+	void			*tx_buffer;
+    */
+	rx_ring: &mut [DmaDesc],
+	tx_ring: &mut [DmaDesc],
+	rx_buffer_size: u32,
+	rx_buffer_dma: usize,
+	rx_ring_dma: usize,
+	tx_ring_dma: usize,
+	dummy_desc: &mut [DmaDesc],
+	dummy_desc_dma: usize,
+
+	phy_addr: u16,
+	pclk_rate: u64,
+	phy_interface: PhyInterfaceMode,
+}
+
+struct MacbConfig {
     dma_burst_length: u32,
     hw_dma_cap: u32,
     caps: u32,
@@ -86,19 +114,23 @@ struct macb_config {
     usrio_clken: u32,
 }
 
-fn macb_start() {
+fn macb_start(macb: MacbDevice, name: &str) {
     let rx_buffer_size = GEM_RX_BUFFER_SIZE;
 
-    let config = macb_config {
-        dma_burst_length: 0,
-        hw_dma_cap: 0,
-        caps: 0,
-        clk_init: 0,
+    let name = "ethernet@10090000";
 
-        usrio_mii: 0,
-        usrio_rmii: 0,
-        usrio_rgmii: 0,
-        usrio_clken: 0,
+    // sifive_config
+    let config = MacbConfig {
+        dma_burst_length: 16,
+        hw_dma_cap: HW_DMA_CAP_32B,
+        caps: 0, //?
+        clk_init: macb_sifive_clk_init,
+
+        // macb_usrio_cfg
+        usrio_mii: 1 << MACB_MII_OFFSE,
+        usrio_rmii: 1 << MACB_RMII_OFFSE,
+        usrio_rgmii: 1 << GEM_RGMII_OFFSE,
+        usrio_clken: 1 << MACB_CLKEN_OFFSE,
     };
 
     // todo 为DMA构建环形缓冲区内存
@@ -249,30 +281,131 @@ fn macb_start() {
         }
     }
 
-    macb_phy_init();
+    let ret = macb_phy_init(name);
+    if ret != 0 {
+        return ret;
+    }
 
     // Enable TX and RX
+    writev((MACB_IOBASE + MACB_NCR) as *mut u32, (1 << MACB_TE_OFFSET) | (1 << MACB_RE_OFFSET));
+
+    0
 }
 
-fn macb_phy_init() -> i32 {
+fn macb_send(macb_tx_head: mut u32, packet: &[u8]) -> i32 {
+    let mut tx_head = macb_tx_head;
+    let length = packet.len();
+    let paddr: u64 = dma_map_single(packet, length, DMA_TO_DEVICE);; // deal with dcache
+    let mut ctrl: u64 = length & TXBUF_FRMLEN_MASK;
+    ctrl |= 1 << MACB_TX_LAST_OFFSET;
+    if tx_head == (MACB_TX_RING_SIZE - 1) {
+        ctrl |= 1 << MACB_TX_WRAP_OFFSET;
+        macb_tx_head = 0;
+    } else {
+        macb_tx_head += 1;
+    }
+    if config.hw_dma_cap & HW_DMA_CAP_64B {
+        tx_head = tx_head * 2;
+    }
 
-    arch_get_mdio_control();
+    tx_ring[tx_head].ctrl = ctrl;
+    
 
-    // phy config
+ 
 
+}
+
+fn macb_phy_init(name: &str) -> i32 {
     // Auto-detect phy_addr
-    macb_phy_find();
+    let mut ret = macb_phy_find();
+    if ret != 0 {
+        return ret;
+    }
 
     // Check if the PHY is up to snuff...
     let phy_id: u16 = macb_mdio_read(phy_addr, MII_PHYSID1);
     if phy_id == 0xffff {
         error!("No PHY present");
-        return -1;
+        return -10; // ENODEV
     }
 
-    phy_connect_dev();
+    phy_connect_dev(); // phy_connect_dev(addr: u32, interface: PhyInterfaceMode) ?
+    phy_config();
 
+    let mut status: u16 = macb_mdio_read(phy_addr, MII_BMSR);
+    if (status & BMSR_LSTATUS) == 0 {
+        // Try to re-negotiate if we don't have link already.
+        macb_phy_reset(name);
+        let mut i = 0;
+        while i < (MACB_AUTONEG_TIMEOUT / 100) {
+            i += 1;
+            status = macb_mdio_read(phy_addr, MII_BMSR);
+            if (status & BMSR_LSTATUS) != 0 {
+                // Delay a bit after the link is established, so that the next xfer does not fail
+                msdelay(10);
+                break;
+            }
+            usdelay(100);
+        }
+    }
 
+    if (status & BMSR_LSTATUS) == 0 {
+        error!("{} link down (status: {:#x})", name, status);
+        return -100; // ENETDOWN
+    }
+
+    let mut ncfgr: u32 = 0;
+    let mut lpa: u16 = 0;
+    let mut adv: u16 = 0;
+
+    // First check for GMAC and that it is GiB capable
+    if gem_is_gigabit_capable() {
+        lpa = macb_mdio_read(phy_addr, MII_STAT1000);
+
+        if (lpa & (LPA_1000FULL | LPA_1000HALF | LPA_1000XFULL | LPA_1000XHALF)) != 0 {
+            duplex = if (lpa & (LPA_1000FULL | LPA_1000XFULL)) == 0 { 0 }else{ 1 }; 
+            let duplex_str = if duplex == 1 { "full" }else{ "half" };
+            info!("{} GiB capable, link up, 1000Mbps {}-duplex (lpa: {:#x})", name, duplex_str, lpa);
+            
+            ncfgr = readv((MACB_IOBASE + MACB_NCFGR) as *const u32);
+            ncfgr &= !((1<< MACB_SPD_OFFSET) | (1 << MACB_FD_OFFSET));
+            ncfgr |= 1 << GEM_GBE_OFFSET;
+            if duplex == 1 {
+                ncfgr |= 1 << MACB_FD_OFFSET;
+            }
+
+            writev((MACB_IOBASE + MACB_NCFGR) as *mut u32, ncfgr);
+
+            macb_linkspd_cb(_1000BASET);
+
+            return 0;
+        }
+    }
+
+    // fall back for EMAC checking
+    adv = macb_mdio_read(phy_addr, MII_ADVERTISE);
+    lpa = macb_mdio_read(phy_addr, MII_LPA);
+    let media = mii_nway_result(lpa & adv);
+
+    let speed = if (media & (ADVERTISE_100FULL | ADVERTISE_100HALF)) == 0 { 0 }else{ 1 };
+    let speed_str = if speed == 1 {"100"}else{"10"};
+    let duplex = if (media & ADVERTISE_FULL) == 0 { 0 }else{ 0 };
+    let duplex_str = if duplex == 1 { "full" }else{ "half" };
+    info!("{} link up, {}Mbps {}-duplex (lpa: {:#x})", name, speed_str, duplex_str, lpa);
+
+    ncfgr = readv((MACB_IOBASE + MACB_NCFGR) as *const u32);
+    ncfgr &= !((1 << MACB_SPD_OFFSET) | (1 << MACB_FD_OFFSET) | (1 << GEM_GBE_OFFSET));
+    if speed == 1 {
+        ncfgr |= 1 << MACB_SPD_OFFSET;
+        macb_linkspd_cb(_100BASET);
+    }else {
+        macb_linkspd_cb(_10BASET);
+    }
+    if duplex == 1 {
+        ncfgr |= (1 << MACB_FD_OFFSET);
+    }
+    writev((MACB_IOBASE + MACB_NCFGR) as *mut u32, ncfgr);
+    0
 }
 
 fn macb_phy_find() -> i32 {
@@ -295,7 +428,31 @@ fn macb_phy_find() -> i32 {
 
     // PHY isn't up to snuff
     error!("PHY not found");
-    return -1;
+    return -19; //ENODEV
+}
+
+fn macb_phy_reset(name: &str) {
+    let status: u16 = 0;
+    let adv = ADVERTISE_CSMA | ADVERTISE_ALL;
+    macb_mdio_write(phy_addr, MII_ADVERTISE, adv);
+    info!("{} Starting autonegotiation...", name);
+    macb_mdio_write(phy_addr, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+
+    let mut i = 0;
+    while i < (MACB_AUTONEG_TIMEOUT / 100) {
+        i += 1;
+        status = macb_mdio_read(phy_addr, MII_BMSR);
+        if (status & BMSR_ANEGCOMPLETE) != 0 {
+            break;
+        }
+        usdelay(100);
+    }
+
+    if (status & BMSR_ANEGCOMPLETE) != 0 {
+        info!("{} Autonegotiation complete", name);
+    } else {
+        warn!("{} Autonegotiation timed out (status={:#x})", name, status);
+    }
 }
 
 fn phy_connect_dev(addr: u32, interface: PhyInterfaceMode) {
@@ -352,9 +509,7 @@ fn phy_reset(phydev_addr: u32, phydev_flags: u32) -> i32 {
 
 fn phy_config() {
     // Microsemi VSC8541 PHY driver config fn: vsc8541_config()
-    
-
-
+    vsc8541_config(interface);
 }
 
 pub fn macb_mdio_write(phy_adr: u8, reg: u8, value: u16) {
@@ -446,7 +601,7 @@ fn mii_nway_result(negotiated: u32) -> u32 {
     ret
 }
 
-fn gmac_configure_dma(config: macb_config) -> i32 {
+fn gmac_configure_dma(config: MacbConfig) -> i32 {
     let GEM_BF = |gem_offset, gem_size, value| (value & ((1 << gem_size) - 1)) << gem_offset;
     let GEM_BFINS = |gem_offset, gem_size, value, old| {
         ((old & !(((1 << gem_size) - 1) << gem_offset)) | GEM_BF(gem_offset, gem_size, value))
@@ -490,7 +645,7 @@ fn gmac_configure_dma(config: macb_config) -> i32 {
     0
 }
 
-fn gmac_init_multi_queues(config: macb_config) {
+fn gmac_init_multi_queues(config: MacbConfig) {
     let mut num_queues = 1;
     // bit 0 is never set but queue 0 always exists
     let queue_mask: u32 = 0xff & readv((MACB_IOBASE + GEM_DCFG6) as *const u32);

@@ -173,4 +173,33 @@ pub const PHY_GMII2RGMII_ID: u32 = 0x5a5a5a5a;
 pub const PHY_MAX_ADDR: u32 = 32;
 pub const PHY_FLAG_BROKEN_RESET: u32 = (1 << 0); /* soft reset not supported */
 
+/* phy seed setup */
+pub const AUTO       : u32 =             99;
+pub const _1000BASET  : u32 =            1000;
+pub const _100BASET   : u32 =            100;
+pub const _10BASET    : u32 =            10;
+pub const HALF        : u32 =            22;
+pub const FULL        : u32 =            44;
 
+/* phy register offsets */
+pub const MII_MIPSCR   : u32 =           0x11;
+
+/* MII_LPA */
+pub const PHY_ANLPAR_PSB_802_3  : u32 =  0x0001;
+pub const PHY_ANLPAR_PSB_802_9  : u32 =  0x0002;
+
+/* MII_CTRL1000 masks */
+pub const PHY_1000BTCR_1000FD   : u32 =  0x0200;
+pub const PHY_1000BTCR_1000HD   : u32 =  0x0100;
+
+/* MII_STAT1000 masks */
+pub const PHY_1000BTSR_MSCF     : u32 =  0x8000;
+pub const PHY_1000BTSR_MSCR     : u32 =  0x4000;
+pub const PHY_1000BTSR_LRS      : u32 =  0x2000;
+pub const PHY_1000BTSR_RRS      : u32 =  0x1000;
+pub const PHY_1000BTSR_1000FD   : u32 =  0x0800;
+pub const PHY_1000BTSR_1000HD   : u32 =  0x0400;
+
+/* phy EXSR */
+pub const ESTATUS_1000XF        : u32 =  0x8000;
+pub const ESTATUS_1000XH        : u32 =  0x4000;

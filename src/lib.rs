@@ -1,6 +1,9 @@
 #![no_std]
-mod macbh;
+mod mii_const;
+mod macb_const;
 pub mod eth_macb;
+pub mod eth_macb_ops;
+pub mod phy_mscc;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

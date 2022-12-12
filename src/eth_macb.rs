@@ -1,4 +1,4 @@
-use crate::macbh::*;
+use crate::macb_const::*;
 use core::arch::asm;
 use log::info;
 
@@ -136,11 +136,19 @@ fn macb_eth_initialize() {
     writev((MACB_IOBASE + MACB_NCFGR) as *mut u32, ncfgr);
 }
 
-fn macb_is_gem() -> bool {
+pub fn macb_is_gem() -> bool {
     let mid_value: u32 = readv((MACB_IOBASE + MACB_MID) as *const u32);
     let macb_bfext = (mid_value >> MACB_IDNUM_OFFSET) & ((1 << MACB_IDNUM_SIZE) - 1);
 
     macb_bfext >= 0x2
+}
+
+pub fn gem_is_gigabit_capable() -> bool {
+    let cpu_is_sama5d2 = false;
+    let cpu_is_sama5d4 = false;
+
+    //The GEM controllers embedded in SAMA5D2 and SAMA5D4 are configured to support only 10/100.
+    macb_is_gem() && !cpu_is_sama5d2 && !cpu_is_sama5d4
 }
 
 fn macb_write_hwaddr(enetaddr: &[u8; 6]) -> i32 {
