@@ -1,3 +1,5 @@
+use crate::macb_const::MACB_RX_USED_OFFSET;
+
 /*
  * These buffer sizes must be power of 2 and divisible
  * by RX_BUFFER_MULTIPLE
@@ -295,7 +297,8 @@ fn macb_start(macb: MacbDevice, name: &str) {
 fn macb_send(macb_tx_head: mut u32, packet: &[u8]) -> i32 {
     let mut tx_head = macb_tx_head;
     let length = packet.len();
-    let paddr: u64 = dma_map_single(packet, length, DMA_TO_DEVICE);; // deal with dcache
+    let paddr: u64 = flush_dcache_range(packet, length);
+
     let mut ctrl: u64 = length & TXBUF_FRMLEN_MASK;
     ctrl |= 1 << MACB_TX_LAST_OFFSET;
     if tx_head == (MACB_TX_RING_SIZE - 1) {
@@ -304,15 +307,156 @@ fn macb_send(macb_tx_head: mut u32, packet: &[u8]) -> i32 {
     } else {
         macb_tx_head += 1;
     }
-    if config.hw_dma_cap & HW_DMA_CAP_64B {
+    if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
         tx_head = tx_head * 2;
+        tx_ring[tx_head + 1].addrh = upper_32_bits(paddr);
+    }
+    tx_ring[tx_head].ctrl = ctrl;
+    tx_ring[tx_head].addr = lower_32_bits(paddr);
+
+    // barrier(); // For memory
+    flush_dcache_range(); // TX ring dma desc
+    writev((MACB_IOBASE + MACB_NCR) as *mut u32, (1 << MACB_TE_OFFSET) | (1 << MACB_RE_OFFSET) | (1 << MACB_TSTART_OFFSET));
+
+    /*
+     * I guess this is necessary because the networking core may
+     * re-use the transmit buffer as soon as we return...
+     */
+    for i in 0..=MACB_TX_TIMEOUT {
+        //barrier();
+        invalidate_dcache_range(); // TX ring dma desc
+        ctrl = tx_ring[tx_head].ctl;
+        if ctrl & (1 << MACB_TX_USED_OFFSET) != 0 {
+            break;
+        }
+        usdelay(1);
+    }
+    // dma_unmap_single(paddr, length, DMA_TO_DEVICE);
+
+    if i <= MACB_TX_TIMEOUT {
+        if ctrl & MACB_BIT(TX_UNDERRUN) != 0 {
+            info!("TX underrun");
+        }
+        if ctrl & MACB_BIT(TX_BUF_EXHAUSTED) != 0 {
+            info!("TX buffers exhausted in mid frame");
+        }
+    } else {
+        info!("TX timeout");
+    }
+    0
+}
+
+fn macb_recv(macb_rx_tail: mut u32, macb_next_rx_tail: mut u32, macb_wrapped: mut bool, packet: &mut [u8]) -> i32 {
+    let mut status: u32 = 0;
+    let mut flag = false;
+    let mut length = 0;
+    let mut count = 0;
+    let mut next_rx_tail: u32 = macb_next_rx_tail;
+
+    macb_wrapped = false;
+    loop {
+        count += 1;
+        macb_invalidate_ring_desc(); // RX DMA DESC
+        if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+            next_rx_tail = next_rx_tail * 2;
+        }
+        if rx_ring[next_rx_tail].addr & MACB_BIT(RX_USED) == 0 {
+            return -11; // EAGAIN
+        }
+        status = rx_ring[next_rx_tail].ctrl;
+        if status & (1 << MACB_RX_SOF_OFFSET) != 0 {
+        if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+            next_rx_tail = next_rx_tail / 2;
+            flag = true;
+        }
+        if next_rx_tail != macb_rx_tail {
+            reclaim_rx_buffers(macb, next_rx_tail);
+        }
+        macb_wrapped = false;
+        }
+
+		if (status & (1 << MACB_RX_EOF_OFFSET)) {
+			buffer = rx_buffer + rx_buffer_size * macb_rx_tail;
+			length = status & RXBUF_FRMLEN_MASK;
+
+			invalidate_dcache_range(); // rx_buffer_dma
+			if macb_wrapped {
+				let headlen = rx_buffer_size * (MACB_RX_RING_SIZE - macb_rx_tail);
+				let taillen = length - headlen;
+                /*
+				memcpy((void *)net_rx_packets[0],
+				       buffer, headlen);
+				memcpy((void *)net_rx_packets[0] + headlen,
+				       macb->rx_buffer, taillen);
+				*packetp = (void *)net_rx_packets[0];
+                */
+			} else {
+				*packet = buffer;
+			}
+
+			if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+				if !flag {
+					next_rx_tail = next_rx_tail / 2;
+                }
+			}
+
+            next_rx_tail += 1;
+			if next_rx_tail >= MACB_RX_RING_SIZE {
+				next_rx_tail = 0;
+            }
+			macb_next_rx_tail = next_rx_tail;
+
+			info!("RX count: {}, length: {}", count, length);
+			return length;
+		} else {
+			if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+				if !flag {
+					next_rx_tail = next_rx_tail / 2;
+                }
+				flag = false;
+			}
+
+            next_rx_tail += 1;
+			if next_rx_tail >= MACB_RX_RING_SIZE {
+				macb_wrapped = true;
+				next_rx_tail = 0;
+			}
+		}
+		// barrier();
     }
 
-    tx_ring[tx_head].ctrl = ctrl;
-    
+}
 
- 
+fn reclaim_rx_buffers(mut macb: MacbDevice, new_tail: u32) {
+    let mut count = 0;
+	let mut i = macb.rx_tail;
+	info!("reclaim_rx_buffers, rx_tail: {}, new_tail: {}}", i, new_tail);
 
+	invalidate_dcache_range(); // RX ring dma
+	while (i > new_tail) {
+		if (macb.config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+			count = i * 2;
+        } else {
+			count = i;
+        }
+		macb.rx_ring[count].addr &= !(1 << MACB_RX_USED_OFFSET);
+		i += 1;
+		if i > MACB_RX_RING_SIZE {
+			i = 0;
+        }
+	}
+	while (i < new_tail) {
+		if (macb.config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+			count = i * 2;
+        } else {
+			count = i;
+        }
+		macb.rx_ring[count].addr &= !(1 << MACB_RX_USED_OFFSET);
+		i += 1;
+	}
+	// barrier();
+	flush_dcache_range(); // RX ring dma
+	macb.rx_tail = new_tail;
 }
 
 fn macb_phy_init(name: &str) -> i32 {
@@ -456,7 +600,8 @@ fn macb_phy_reset(name: &str) {
 }
 
 fn phy_connect_dev(addr: u32, interface: PhyInterfaceMode) {
-    let phydev_addr = 0; let phydev_flags = 0; // ?
+    let phydev_addr = 0;
+    let phydev_flags = 0;
 
     let phydev = 0xff;
     let mask: u32 = if (addr >= 0) { 1 << addr } else { 0xffffffff };
