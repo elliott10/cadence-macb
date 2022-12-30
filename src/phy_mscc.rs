@@ -1,6 +1,8 @@
+use log::*;
+
 use crate::mii_const::*;
-use log::{info, error};
-use crate::eth_macb_ops::{PhyInterfaceMode, macb_mdio_write, macb_mdio_read};
+use crate::eth_macb_ops::{macb_mdio_write, macb_mdio_read};
+use crate::eth_macb_ops::PhyInterfaceMode::{self, *};
 
 /* Microsemi PHY ID's */
 const PHY_ID_VSC8530: u32 = 0x00070560;
@@ -141,7 +143,7 @@ const READ_ROM: u32 = BIT(13);
 const READ_RAM: u32 = (0x00 << 13);
 const INT_MEM_WRITE_EN: u32 = BIT(12);
 //const EN_PATCH_RAM_TRAP_ADDR(x): u32 =	BIT((x) + 7);
-const INT_MEM_DATA_M: u32 = GENMASK(7, 0);
+//const INT_MEM_DATA_M: u32 = GENMASK(7, 0);
 //const INT_MEM_DATA(x)	: u32 =		(INT_MEM_DATA_M & (x));
 
 /* Extended page GPIO register 13G */
@@ -171,7 +173,7 @@ const PROC_CMD_SGMII_MAC: u32 = (BIT(5) | BIT(4));
 const PROC_CMD_QSGMII_MAC: u32 = BIT(5);
 const PROC_CMD_NO_MAC_CONF: u32 = (0x00 << 4);
 const PROC_CMD_1588_DEFAULT_INIT: u32 = BIT(4);
-const PROC_CMD_NOP: u32 = GENMASK(3, 0);
+//const PROC_CMD_NOP: u32 = GENMASK(3, 0);
 const PROC_CMD_PHY_INIT: u32 = (BIT(3) | BIT(1));
 const PROC_CMD_CRC16: u32 = BIT(3);
 const PROC_CMD_FIBER_MEDIA_CONF: u32 = BIT(0);

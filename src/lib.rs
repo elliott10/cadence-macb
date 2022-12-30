@@ -1,9 +1,13 @@
 #![no_std]
+
+extern crate alloc;
+
 mod mii_const;
 mod macb_const;
 pub mod eth_macb;
 pub mod eth_macb_ops;
 pub mod phy_mscc;
+
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
@@ -11,6 +15,7 @@ pub fn add(left: usize, right: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
 
     #[test]
@@ -18,4 +23,5 @@ mod tests {
         let result = add(2, 2);
         assert_eq!(result, 4);
     }
+    */
 }

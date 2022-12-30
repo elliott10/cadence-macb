@@ -1,26 +1,31 @@
-use log::info;
+use core::mem::size_of;
+use core::slice;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use log::*;
 
 use crate::macb_const::*;
 use crate::mii_const::*;
 use crate::eth_macb::*;
 
+
 /*
  * These buffer sizes must be power of 2 and divisible
  * by RX_BUFFER_MULTIPLE
  */
-pub const MACB_RX_BUFFER_SIZE: u64 = 128;
-pub const GEM_RX_BUFFER_SIZE: u64 = 2048;
-pub const RX_BUFFER_MULTIPLE: u64 = 64;
+pub const MACB_RX_BUFFER_SIZE: usize = 128;
+pub const GEM_RX_BUFFER_SIZE: usize = 2048;
+pub const RX_BUFFER_MULTIPLE: usize = 64;
 
-pub const MACB_RX_RING_SIZE: u64 = 32;
-pub const MACB_TX_RING_SIZE: u64 = 16;
+pub const MACB_RX_RING_SIZE: usize = 32;
+pub const MACB_TX_RING_SIZE: usize = 16;
 
 pub const MACB_TX_TIMEOUT: u64 = 1000;
 pub const MACB_AUTONEG_TIMEOUT: u64 = 5000000;
 
 pub const HW_DMA_CAP_32B: u32 = 0;
 pub const HW_DMA_CAP_64B: u32 = 1;
-pub const DMA_DESC_SIZE: u32 = 16;
+pub const DMA_DESC_SIZE: usize = 16;
 
 pub const RXBUF_FRMLEN_MASK: u64 = 0x00000fff;
 pub const TXBUF_FRMLEN_MASK: u64 = 0x000007ff;
@@ -48,6 +53,7 @@ pub struct DmaDesc64 {
     unused: u32,
 }
 
+#[derive(PartialEq)]
 pub enum PhyInterfaceMode {
     MII = 0,
     GMII = 1,
@@ -80,7 +86,7 @@ pub enum PhyInterfaceMode {
     COUNT = 27,
 }
 
-struct MacbDevice {
+struct MacbDevice<'a> {
 	regs: u64, //MACB_IOBASE
 	is_big_endian: bool,
 	config: MacbConfig,
@@ -94,13 +100,13 @@ struct MacbDevice {
 	void			*rx_buffer;
 	void			*tx_buffer;
     */
-	rx_ring: &mut [DmaDesc],
-	tx_ring: &mut [DmaDesc],
-	rx_buffer_size: u32,
+	rx_ring: &'a mut [DmaDesc],
+	tx_ring: &'a mut [DmaDesc],
+	rx_buffer_size: usize,
 	rx_buffer_dma: usize,
 	rx_ring_dma: usize,
 	tx_ring_dma: usize,
-	dummy_desc: &mut [DmaDesc],
+	dummy_desc: &'a mut [DmaDesc],
 	dummy_desc_dma: usize,
 
 	phy_addr: u16,
@@ -113,6 +119,7 @@ struct MacbConfig {
     hw_dma_cap: u32,
     caps: u32,
     clk_init: usize, // fn clk_init
+    //clk_init: Box<dyn Fn(u64)>,
 
     usrio_mii: u32,
     usrio_rmii: u32,
@@ -120,17 +127,17 @@ struct MacbConfig {
     usrio_clken: u32,
 }
 
-fn macb_start(macb: MacbDevice, name: &str) {
+fn macb_start(macb: &mut MacbDevice, name: &str) -> i32 {
     let rx_buffer_size = GEM_RX_BUFFER_SIZE;
-
     let name = "ethernet@10090000";
 
     // sifive_config
     let config = MacbConfig {
         dma_burst_length: 16,
         hw_dma_cap: HW_DMA_CAP_32B,
-        caps: 0, //?
-        clk_init: macb_sifive_clk_init,
+        caps: 0,
+        //clk_init: Box::new(macb_sifive_clk_init),
+        clk_init: macb_sifive_clk_init as usize,
 
         // macb_usrio_cfg
         usrio_mii: 1 << MACB_MII_OFFSET,
@@ -169,11 +176,11 @@ fn macb_start(macb: MacbDevice, name: &str) {
     // 一起申请所有RX内存
     let alloc_rx_buffer_pages =
         ((MACB_RX_RING_SIZE * rx_buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
-    let rx_buffer_dma = MEM::dma_alloc_coherent(alloc_rx_buffer_pages);
+    let rx_buffer_dma: usize = MEM::dma_alloc_coherent(alloc_rx_buffer_pages);
 
     info!("Set ring desc buffer for RX");
     let count = 0;
-    let paddr: u64 = rx_buffer_dma;
+    let paddr: u64 = rx_buffer_dma as u64;
     for i in 0..MACB_RX_RING_SIZE {
         if i == MACB_RX_RING_SIZE - 1 {
             paddr |= 1 << MACB_RX_WRAP_OFFSET;
@@ -188,8 +195,8 @@ fn macb_start(macb: MacbDevice, name: &str) {
         rx_ring[count].ctrl = 0;
         rx_ring[count].addr = lower_32_bits(paddr);
 
-        recv_buffers.push(phys_to_virt(paddr));
-        paddr += rx_buffer_size;
+        recv_buffers.push(phys_to_virt(paddr as usize));
+        paddr += (rx_buffer_size as u64);
 
         // sync memery, fence指令？
     }
@@ -212,7 +219,7 @@ fn macb_start(macb: MacbDevice, name: &str) {
             tx_ring[count].ctrl = (1 << MACB_TX_USED_OFFSET);
         }
 
-        send_buffers.push(phys_to_virt(paddr));
+        send_buffers.push(phys_to_virt(paddr as usize));
     }
     flush_dcache_range(); // TX dma ring
 
@@ -222,72 +229,110 @@ fn macb_start(macb: MacbDevice, name: &str) {
         recv_buffers.len()
     );
 
+    let dummy_desc_dma =
+        MEM::dma_alloc_coherent((1 * DMA_DESC_SIZE + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE);
+    let dummy_desc = unsafe {
+        slice::from_raw_parts_mut(
+            dummy_desc_dma as *mut DmaDesc,
+            1 * DMA_DESC_SIZE / size_of::<DmaDesc>(),
+        )
+    };
+
+    let pclk_rate = 125125000; // from eth_macb.rs
+    let mut macb = MacbDevice {
+	regs: MACB_IOBASE,
+	is_big_endian: is_big_endian(),
+	config,
+
+		rx_tail: 0,
+		tx_head: 0,
+		tx_tail: 0,
+		next_rx_tail: 0,
+    
+	wrapped: false, // ?
     /*
-     macb->rx_tail = 0;
-     macb->tx_head = 0;
-     macb->tx_tail = 0;
-     macb->next_rx_tail = 0;
+	void			*rx_buffer;
+	void			*tx_buffer;
+    */
+	rx_ring,
+	tx_ring,
+	rx_buffer_size,
+	rx_buffer_dma,
+	rx_ring_dma,
+	tx_ring_dma,
+	dummy_desc,
+	dummy_desc_dma,
+
+	phy_addr: 0,
+	pclk_rate,
+	phy_interface: PhyInterfaceMode::GMII,
+};
+    /*
+     macb.rx_tail = 0;
+     macb.tx_head = 0;
+     macb.tx_tail = 0;
+     macb.next_rx_tail = 0;
     */
 
     writev(
         (MACB_IOBASE + MACB_RBQP) as *mut u32,
-        lower_32_bits(rx_ring_dma),
+        lower_32_bits(rx_ring_dma as u64),
     );
     writev(
         (MACB_IOBASE + MACB_TBQP) as *mut u32,
-        lower_32_bits(tx_ring_dma),
+        lower_32_bits(tx_ring_dma as u64),
     );
     if config.hw_dma_cap & HW_DMA_CAP_64B != 0 {
         writev(
             (MACB_IOBASE + MACB_RBQPH) as *mut u32,
-            upper_32_bits(rx_ring_dma),
+            upper_32_bits(rx_ring_dma as u64),
         );
         writev(
             (MACB_IOBASE + MACB_TBQPH) as *mut u32,
-            upper_32_bits(tx_ring_dma),
+            upper_32_bits(tx_ring_dma as u64),
         );
     }
 
     let val: u32 = 0;
     if macb_is_gem() {
         // Initialize DMA properties
-        gmac_configure_dma(config);
+        gmac_configure_dma(&mut macb);
         // Check the multi queue and initialize the queue for tx
-        gmac_init_multi_queues(config);
+        gmac_init_multi_queues(&mut macb);
 
-        if (phy_interface == RGMII)
-            || (phy_interface == RGMII_ID)
-            || (phy_interface == RGMII_RXID)
-            || (phy_interface == RGMII_TXID)
+        if (macb.phy_interface == PhyInterfaceMode::RGMII)
+            || (macb.phy_interface == PhyInterfaceMode::RGMII_ID)
+            || (macb.phy_interface == PhyInterfaceMode::RGMII_RXID)
+            || (macb.phy_interface == PhyInterfaceMode::RGMII_TXID)
         {
             val = config.usrio_rgmii;
-        } else if phy_interface == RMII {
+        } else if macb.phy_interface == PhyInterfaceMode::RMII {
             val = config.usrio_rmii;
-        } else if phy_interface == MII {
+        } else if macb.phy_interface == PhyInterfaceMode::MII {
             val = config.usrio_mii;
         }
 
-        if (config.caps & MACB_CAPS_USRIO_HAS_CLKEN) != 0 {
+        if (config.caps & (MACB_CAPS_USRIO_HAS_CLKEN as u32)) != 0 {
             val |= config.usrio_clken;
         }
 
         writev((MACB_IOBASE + GEM_USRIO) as *mut u32, val);
 
-        if phy_interface == SGMII {
+        if macb.phy_interface == PhyInterfaceMode::SGMII {
             let ncfgr: u32 = readv((MACB_IOBASE + MACB_NCFGR) as *const u32);
             ncfgr |= (1 << GEM_SGMIIEN_OFFSET) | (1 << GEM_PCSSEL_OFFSET);
-            info!("Write MACB_NCFGR: %#x when SGMII", ncfgr);
+            info!("Write MACB_NCFGR: {:#x} when SGMII", ncfgr);
             writev((MACB_IOBASE + MACB_NCFGR) as *mut u32, ncfgr);
         }
     } else {
-        if phy_interface == RMII {
+        if macb.phy_interface == PhyInterfaceMode::RMII {
             writev((MACB_IOBASE + MACB_USRIO) as *mut u32, 0);
         } else {
             writev((MACB_IOBASE + MACB_USRIO) as *mut u32, config.usrio_mii);
         }
     }
 
-    let ret = macb_phy_init(name);
+    let ret = macb_phy_init(&mut macb, name);
     if ret != 0 {
         return ret;
     }
@@ -463,15 +508,15 @@ fn reclaim_rx_buffers(mut macb: MacbDevice, new_tail: u32) {
 	macb.rx_tail = new_tail;
 }
 
-fn macb_phy_init(name: &str) -> i32 {
+fn macb_phy_init(macb: &mut MacbDevice, name: &str) -> i32 {
     // Auto-detect phy_addr
-    let mut ret = macb_phy_find();
+    let mut ret = macb_phy_find(macb);
     if ret != 0 {
         return ret;
     }
 
     // Check if the PHY is up to snuff...
-    let phy_id: u16 = macb_mdio_read(phy_addr, MII_PHYSID1);
+    let phy_id: u16 = macb_mdio_read(macb.phy_addr, MII_PHYSID1);
     if phy_id == 0xffff {
         error!("No PHY present");
         return -10; // ENODEV
@@ -480,14 +525,14 @@ fn macb_phy_init(name: &str) -> i32 {
     phy_connect_dev(); // phy_connect_dev(addr: u32, interface: PhyInterfaceMode) ?
     phy_config();
 
-    let mut status: u16 = macb_mdio_read(phy_addr, MII_BMSR);
+    let mut status: u16 = macb_mdio_read(macb.phy_addr, MII_BMSR);
     if (status & BMSR_LSTATUS) == 0 {
         // Try to re-negotiate if we don't have link already.
         macb_phy_reset(name);
         let mut i = 0;
         while i < (MACB_AUTONEG_TIMEOUT / 100) {
             i += 1;
-            status = macb_mdio_read(phy_addr, MII_BMSR);
+            status = macb_mdio_read(macb.phy_addr, MII_BMSR);
             if (status & BMSR_LSTATUS) != 0 {
                 // Delay a bit after the link is established, so that the next xfer does not fail
                 msdelay(10);
@@ -508,7 +553,7 @@ fn macb_phy_init(name: &str) -> i32 {
 
     // First check for GMAC and that it is GiB capable
     if gem_is_gigabit_capable() {
-        lpa = macb_mdio_read(phy_addr, MII_STAT1000);
+        lpa = macb_mdio_read(macb.phy_addr, MII_STAT1000);
 
         if (lpa & (LPA_1000FULL | LPA_1000HALF | LPA_1000XFULL | LPA_1000XHALF)) != 0 {
             duplex = if (lpa & (LPA_1000FULL | LPA_1000XFULL)) == 0 { 0 }else{ 1 }; 
@@ -531,8 +576,8 @@ fn macb_phy_init(name: &str) -> i32 {
     }
 
     // fall back for EMAC checking
-    adv = macb_mdio_read(phy_addr, MII_ADVERTISE);
-    lpa = macb_mdio_read(phy_addr, MII_LPA);
+    adv = macb_mdio_read(macb.phy_addr, MII_ADVERTISE);
+    lpa = macb_mdio_read(macb.phy_addr, MII_LPA);
     let media = mii_nway_result(lpa & adv);
 
     let speed = if (media & (ADVERTISE_100FULL | ADVERTISE_100HALF)) == 0 { 0 }else{ 1 };
@@ -556,20 +601,20 @@ fn macb_phy_init(name: &str) -> i32 {
     0
 }
 
-fn macb_phy_find() -> i32 {
+fn macb_phy_find(macb: &mut MacbDevice) -> i32 {
     //let mut phy_addr: u16 = 0;
 
-    let mut phy_id: u16 = phy_id = macb_mdio_read(phy_addr, MII_PHYSID1);
+    let mut phy_id: u16 = macb_mdio_read(macb.phy_addr, MII_PHYSID1);
     if phy_id != 0xffff {
-        info("PHY present at {}", phy_addr);
+        info!("PHY present at {}", macb.phy_addr);
         return 0;
     }
     // Search for PHY...
     for i in 0..32 {
-        phy_addr = i;
-        phy_id = macb_mdio_read(phy_addr, MII_PHYSID1);
+        macb.phy_addr = i;
+        phy_id = macb_mdio_read(macb.phy_addr, MII_PHYSID1);
         if phy_id != 0xffff {
-            info("PHY present at {}", i);
+            info!("PHY present at {}", i);
             return 0;
         }
     }
@@ -661,7 +706,7 @@ fn phy_config() {
     vsc8541_config(interface);
 }
 
-pub fn macb_mdio_write(phy_adr: u8, reg: u8, value: u16) {
+pub fn macb_mdio_write(phy_adr: u32, reg: u32, value: u16) {
     let mut netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl |= 1 << MACB_MPE_OFFSET;
     writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
@@ -669,14 +714,14 @@ pub fn macb_mdio_write(phy_adr: u8, reg: u8, value: u16) {
     // MACB_BF(name,value) 
     // (((value) & ((1 << MACB_x_SIZE) - 1)) << MACB_x_OFFSET)
 
-    let frame: u64 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
+    let frame: u32 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
                     | ((1 & ((1 << MACB_RW_SIZE) - 1)) << MACB_RW_OFFSET)
-                    | ((phy_adr as u64 & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
-                    | ((reg as u64 & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
+                    | ((phy_adr & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
+                    | ((reg & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
                     | ((2 & ((1 << MACB_CODE_SIZE) - 1)) << MACB_CODE_OFFSET)
-                    | ((value as u64 & ((1 << MACB_DATA_SIZE) - 1)) << MACB_DATA_OFFSET);
+                    | ((value as u32 & ((1 << MACB_DATA_SIZE) - 1)) << MACB_DATA_OFFSET);
 
-    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame as u32);
+    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame);
     while (readv((MACB_IOBASE + MACB_NSR) as *const u32) & (1 << MACB_IDLE_OFFSET)) == 0 {}
 
     netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
@@ -684,21 +729,21 @@ pub fn macb_mdio_write(phy_adr: u8, reg: u8, value: u16) {
     writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
 }
 
-pub fn macb_mdio_read(phy_adr: u8, reg: u8) -> u16 {
+pub fn macb_mdio_read(phy_adr: u32, reg: u32) -> u16 {
     let mut netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl |= 1 << MACB_MPE_OFFSET;
     writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
 
-    let mut frame: u64 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
+    let mut frame: u32 = ((1 & ((1 << MACB_SOF_SIZE) - 1)) << MACB_SOF_OFFSET)
                     | ((2 & ((1 << MACB_RW_SIZE) - 1)) << MACB_RW_OFFSET)
-                    | ((phy_adr as u64 & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
-                    | ((reg as u64 & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
+                    | ((phy_adr & ((1 << MACB_PHYA_SIZE) - 1)) << MACB_PHYA_OFFSET)
+                    | ((reg & ((1 << MACB_REGA_SIZE) - 1)) << MACB_REGA_OFFSET)
                     | ((2 & ((1 << MACB_CODE_SIZE) - 1)) << MACB_CODE_OFFSET);
 
-    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame as u32);
+    writev((MACB_IOBASE + MACB_MAN) as *mut u32, frame);
     while (readv((MACB_IOBASE + MACB_NSR) as *const u32) & (1 << MACB_IDLE_OFFSET)) == 0 {}
 
-    frame = readv((MACB_IOBASE + MACB_MAN) as *const u32) as u64;
+    frame = readv((MACB_IOBASE + MACB_MAN) as *const u32);
 
     netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl &= !(1 << MACB_MPE_OFFSET);
@@ -750,23 +795,23 @@ fn mii_nway_result(negotiated: u32) -> u32 {
     ret
 }
 
-fn gmac_configure_dma(config: MacbConfig) -> i32 {
+fn gmac_configure_dma(macb: &MacbDevice) -> i32 {
     let GEM_BF = |gem_offset, gem_size, value| (value & ((1 << gem_size) - 1)) << gem_offset;
-    let GEM_BFINS = |gem_offset, gem_size, value, old| {
-        ((old & !(((1 << gem_size) - 1) << gem_offset)) | GEM_BF(gem_offset, gem_size, value))
+    let GEM_BFINS = |gem_offset, gem_size, value, old| -> u32 {
+        (old & !(((1 << gem_size) - 1) << gem_offset)) | GEM_BF(gem_offset, gem_size, value)
     };
     let GEM_BIT = |offset| 1 << offset;
 
-    let buffer_size: u32 = rx_buffer_size / RX_BUFFER_MULTIPLE;
+    let buffer_size: u32 = (macb.rx_buffer_size / RX_BUFFER_MULTIPLE) as u32;
     let dmacfg: u32 = readv((MACB_IOBASE + GEM_DMACFG) as *const u32)
         & !GEM_BF(GEM_RXBS_OFFSET, GEM_RXBS_SIZE, -1);
     dmacfg |= GEM_BF(GEM_RXBS_OFFSET, GEM_RXBS_SIZE, buffer_size);
 
-    if config.dma_burst_length != 0 {
+    if macb.config.dma_burst_length != 0 {
         dmacfg = GEM_BFINS(
             GEM_FBLDO_OFFSET,
             GEM_FBLDO_SIZE,
-            config.dma_burst_length,
+            macb.config.dma_burst_length,
             dmacfg,
         );
     }
@@ -781,7 +826,7 @@ fn gmac_configure_dma(config: MacbConfig) -> i32 {
     }
 
     dmacfg &= !GEM_BIT(GEM_ADDR64_OFFSET);
-    if config.hw_dma_cap & HW_DMA_CAP_64B != 0 {
+    if macb.config.hw_dma_cap & HW_DMA_CAP_64B != 0 {
         dmacfg |= GEM_BIT(GEM_ADDR64_OFFSET);
     }
 
@@ -794,7 +839,7 @@ fn gmac_configure_dma(config: MacbConfig) -> i32 {
     0
 }
 
-fn gmac_init_multi_queues(config: MacbConfig) {
+fn gmac_init_multi_queues(macb: &mut MacbDevice) {
     let mut num_queues = 1;
     // bit 0 is never set but queue 0 always exists
     let queue_mask: u32 = 0xff & readv((MACB_IOBASE + GEM_DCFG6) as *const u32);
@@ -806,19 +851,11 @@ fn gmac_init_multi_queues(config: MacbConfig) {
         }
     }
 
-    let dummy_desc_dma =
-        MEM::dma_alloc_coherent((1 * DMA_DESC_SIZE + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE);
-    let dummy_desc = unsafe {
-        slice::from_raw_parts_mut(
-            dummy_desc_dma as *mut DmaDesc,
-            1 * DMA_DESC_SIZE / size_of::<DmaDesc>(),
-        )
-    };
-    dummy_desc[0].ctrl = 1 << MACB_TX_USED_OFFSET;
-    dummy_desc[0].addr = 0;
+    macb.dummy_desc[0].ctrl = 1 << MACB_TX_USED_OFFSET;
+    macb.dummy_desc[0].addr = 0;
     flush_dcache_range(); // dummy_desc_dma, len: MACB_TX_DUMMY_DMA_DESC_SIZE
 
-    let paddr: u64 = dummy_desc_dma;
+    let paddr: u64 = macb.dummy_desc_dma as u64;
 
     let GEM_TBQP = |hw_q| 0x0440 + ((hw_q) << 2);
     let GEM_RBQP = |hw_q| 0x0480 + ((hw_q) << 2);
@@ -834,7 +871,7 @@ fn gmac_init_multi_queues(config: MacbConfig) {
             (MACB_IOBASE + GEM_RBQP(i - 1)) as *mut u32,
             lower_32_bits(paddr),
         );
-        if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
+        if (macb.config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
             writev(
                 (MACB_IOBASE + GEM_TBQPH(i - 1)) as *mut u32,
                 upper_32_bits(paddr),

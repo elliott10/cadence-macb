@@ -3,18 +3,18 @@ use core::arch::asm;
 use log::info;
 
 // clk -> reg
-pub const TIMER_CLOCK: u64 = 1000000;
+pub const TIMER_CLOCK: u32 = 1000000;
 
-pub const RESET_BASE: u64 = 0;
-pub const PRCI_RESETREG_OFFSET: u64 = 0x28;
+pub const RESET_BASE: u32 = 0;
+pub const PRCI_RESETREG_OFFSET: u32 = 0x28;
 
 // PROCMONCFG
-pub const PRCI_PROCMONCFG_OFFSET: u64 = 0xF0;
-pub const PRCI_PROCMONCFG_CORE_CLOCK_MASK: u64 = 1 << 24;
+pub const PRCI_PROCMONCFG_OFFSET: u32 = 0xF0;
+pub const PRCI_PROCMONCFG_CORE_CLOCK_MASK: u32 = 1 << 24;
 
-pub const MACB_IOBASE: u64 = 0x10090000;
-pub const GEMGXL_BASE: u64 = 0x100a0000;
-pub const PRCI_BASE: u64 = 0x10000000;
+pub const MACB_IOBASE: u32 = 0x10090000;
+pub const GEMGXL_BASE: u32 = 0x100a0000;
+pub const PRCI_BASE: u32 = 0x10000000;
 
 /// Memory functions that drivers must use
 pub trait MemMapping {
@@ -283,16 +283,16 @@ pub fn msdelay(ms: u64) {
     usdelay(ms * 1000);
 }
 
-fn readv<T>(src: *const T) -> T {
+pub fn readv<T>(src: *const T) -> T {
     unsafe { core::ptr::read_volatile(phys_to_virt(src as usize) as *const T) }
 }
 
-fn writev<T>(dst: *mut T, value: T) {
+pub fn writev<T>(dst: *mut T, value: T) {
     unsafe {
         core::ptr::write_volatile(phys_to_virt(dst as usize) as *mut T, value);
     }
 }
 
-fn phys_to_virt(addr: usize) -> usize {
+pub fn phys_to_virt(addr: usize) -> usize {
     addr
 }
