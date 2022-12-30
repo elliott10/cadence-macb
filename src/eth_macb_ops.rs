@@ -1,4 +1,8 @@
-use crate::macb_const::MACB_RX_USED_OFFSET;
+use log::info;
+
+use crate::macb_const::*;
+use crate::mii_const::*;
+use crate::eth_macb::*;
 
 /*
  * These buffer sizes must be power of 2 and divisible
@@ -14,9 +18,9 @@ pub const MACB_TX_RING_SIZE: u64 = 16;
 pub const MACB_TX_TIMEOUT: u64 = 1000;
 pub const MACB_AUTONEG_TIMEOUT: u64 = 5000000;
 
-pub const HW_DMA_CAP_32B: u64 = 0;
-pub const HW_DMA_CAP_64B: u64 = 1;
-pub const DMA_DESC_SIZE: u64 = 16;
+pub const HW_DMA_CAP_32B: u32 = 0;
+pub const HW_DMA_CAP_64B: u32 = 1;
+pub const DMA_DESC_SIZE: u32 = 16;
 
 pub const RXBUF_FRMLEN_MASK: u64 = 0x00000fff;
 pub const TXBUF_FRMLEN_MASK: u64 = 0x000007ff;
@@ -57,19 +61,19 @@ pub enum PhyInterfaceMode {
     RGMII_RXID = 9,
     RGMII_TXID = 10,
     RTBI = 11,
-    1000BASEX = 12,
-    2500BASEX = 13,
+    BASEX1000 = 12,
+    BASEX2500 = 13,
     XGMII = 14,
     XAUI = 15,
     RXAUI = 16,
     SFI = 17,
     INTERNAL = 18,
-    25G_AUI = 19,
+    AUI_25G = 19,
     XLAUI = 20,
     CAUI2 = 21,
     CAUI4 = 22,
     NCSI = 23,
-    10GBASER = 24,
+    BASER10G = 24,
     USXGMII = 25,
     NONE = 26, /* Must be last */
 
@@ -129,10 +133,10 @@ fn macb_start(macb: MacbDevice, name: &str) {
         clk_init: macb_sifive_clk_init,
 
         // macb_usrio_cfg
-        usrio_mii: 1 << MACB_MII_OFFSE,
-        usrio_rmii: 1 << MACB_RMII_OFFSE,
-        usrio_rgmii: 1 << GEM_RGMII_OFFSE,
-        usrio_clken: 1 << MACB_CLKEN_OFFSE,
+        usrio_mii: 1 << MACB_MII_OFFSET,
+        usrio_rmii: 1 << MACB_RMII_OFFSET,
+        usrio_rgmii: 1 << GEM_RGMII_OFFSET,
+        usrio_clken: 1 << MACB_CLKEN_OFFSET,
     };
 
     // todo 为DMA构建环形缓冲区内存

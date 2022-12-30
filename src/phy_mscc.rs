@@ -1,4 +1,6 @@
 use crate::mii_const::*;
+use log::{info, error};
+use crate::eth_macb_ops::{PhyInterfaceMode, macb_mdio_write, macb_mdio_read};
 
 /* Microsemi PHY ID's */
 const PHY_ID_VSC8530: u32 = 0x00070560;
@@ -238,6 +240,10 @@ const MSCC_VSC8574_REVB_INT8051_FW_CRC: u32 = 0x29e8;
 
 const MSCC_VSC8584_REVB_INT8051_FW_START_ADDR: u32 = 0xe800;
 const MSCC_VSC8584_REVB_INT8051_FW_CRC: u32 = 0xfb48;
+
+fn BIT(nr: u32) -> u32 {
+    1 << nr
+}
 
 pub fn vsc8541_config(interface: PhyInterfaceMode) -> i32 {
     let mut retval: i32 = -22; // EINVAL

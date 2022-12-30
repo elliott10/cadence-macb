@@ -203,3 +203,72 @@ pub const PHY_1000BTSR_1000HD   : u32 =  0x0400;
 /* phy EXSR */
 pub const ESTATUS_1000XF        : u32 =  0x8000;
 pub const ESTATUS_1000XH        : u32 =  0x4000;
+
+/* Indicates what features are supported by the interface. */
+pub const SUPPORTED_10baseT_Half	: u32 =	(1 << 0);
+pub const SUPPORTED_10baseT_Full	: u32 =	(1 << 1);
+pub const SUPPORTED_100baseT_Half	: u32 =	(1 << 2);
+pub const SUPPORTED_100baseT_Full	: u32 =	(1 << 3);
+pub const SUPPORTED_1000baseT_Half: u32 =	(1 << 4);
+pub const SUPPORTED_1000baseT_Full: u32 =	(1 << 5);
+pub const SUPPORTED_Autoneg	: u32 =	(1 << 6);
+pub const SUPPORTED_TP		: u32 =	(1 << 7);
+pub const SUPPORTED_AUI		: u32 =	(1 << 8);
+pub const SUPPORTED_MII		: u32 =	(1 << 9);
+pub const SUPPORTED_FIBRE	: u32 =		(1 << 10);
+pub const SUPPORTED_BNC		: u32 =	(1 << 11);
+pub const SUPPORTED_10000baseT_Full: u32 =	(1 << 12);
+pub const SUPPORTED_Pause		: u32 =	(1 << 13);
+pub const SUPPORTED_Asym_Pause	: u32 =	(1 << 14);
+pub const SUPPORTED_2500baseX_Full: u32 =	(1 << 15);
+pub const SUPPORTED_Backplane	: u32 =	(1 << 16);
+pub const SUPPORTED_1000baseKX_Full: u32 =	(1 << 17);
+pub const SUPPORTED_10000baseKX4_Full: u32 =	(1 << 18);
+pub const SUPPORTED_10000baseKR_Full: u32 =	(1 << 19);
+pub const SUPPORTED_10000baseR_FEC: u32 =	(1 << 20);
+pub const SUPPORTED_1000baseX_Half: u32 =	(1 << 21);
+pub const SUPPORTED_1000baseX_Full: u32 =	(1 << 22);
+
+/* Indicates what features are advertised by the interface. */
+pub const ADVERTISED_10baseT_Half	: u32 =	(1 << 0);
+pub const ADVERTISED_10baseT_Full	: u32 =	(1 << 1);
+pub const ADVERTISED_100baseT_Half: u32 =	(1 << 2);
+pub const ADVERTISED_100baseT_Full: u32 =	(1 << 3);
+pub const ADVERTISED_1000baseT_Half: u32 =	(1 << 4);
+pub const ADVERTISED_1000baseT_Full: u32 =	(1 << 5);
+pub const ADVERTISED_Autoneg	: u32 =	(1 << 6);
+pub const ADVERTISED_TP		: u32 =	(1 << 7);
+pub const ADVERTISED_AUI	: u32 =		(1 << 8);
+pub const ADVERTISED_MII	: u32 =		(1 << 9);
+pub const ADVERTISED_FIBRE	: u32 =	(1 << 10);
+pub const ADVERTISED_BNC	: u32 =		(1 << 11);
+pub const ADVERTISED_10000baseT_Full: u32 =	(1 << 12);
+pub const ADVERTISED_Pause	: u32 =	(1 << 13);
+pub const ADVERTISED_Asym_Pause	: u32 =	(1 << 14);
+pub const ADVERTISED_2500baseX_Full: u32 =	(1 << 15);
+pub const ADVERTISED_Backplane	: u32 =	(1 << 16);
+pub const ADVERTISED_1000baseKX_Full: u32 =	(1 << 17);
+pub const ADVERTISED_10000baseKX4_Full: u32 =	(1 << 18);
+pub const ADVERTISED_10000baseKR_Full: u32 =	(1 << 19);
+pub const ADVERTISED_10000baseR_FEC: u32 =	(1 << 20);
+pub const ADVERTISED_1000baseX_Half: u32 =	(1 << 21);
+pub const ADVERTISED_1000baseX_Full: u32 =	(1 << 22);
+
+/* The forced speed, 10Mb, 100Mb, gigabit, 2.5Gb, 10GbE. */
+pub const SPEED_10	: u32 =	10;
+pub const SPEED_100	: u32 =	100;
+pub const SPEED_1000: u32 =		1000;
+pub const SPEED_2500	: u32 =	2500;
+pub const SPEED_10000	: u32 =	10000;
+pub const SPEED_14000	: u32 =	14000;
+pub const SPEED_20000	: u32 =	20000;
+pub const SPEED_25000	: u32 =	25000;
+pub const SPEED_40000	: u32 =	40000;
+pub const SPEED_50000	: u32 =	50000;
+pub const SPEED_56000	: u32 =	56000;
+pub const SPEED_100000	: u32 =	100000;
+pub const SPEED_200000	: u32 =	200000;
+
+/* Duplex, half or full. */
+pub const DUPLEX_HALF	: u32 =	0x00;
+pub const DUPLEX_FULL	: u32 =	0x01;
