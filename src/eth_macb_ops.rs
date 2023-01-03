@@ -7,7 +7,7 @@ use log::*;
 use crate::macb_const::*;
 use crate::mii_const::*;
 use crate::eth_macb::*;
-
+use crate::phy_mscc::vsc8541_config;
 
 /*
  * These buffer sizes must be power of 2 and divisible
@@ -53,6 +53,7 @@ pub struct DmaDesc64 {
     unused: u32,
 }
 
+#[derive(Debug)]
 #[derive(PartialEq)]
 pub enum PhyInterfaceMode {
     MII = 0,
@@ -87,7 +88,7 @@ pub enum PhyInterfaceMode {
 }
 
 struct MacbDevice<'a> {
-	regs: u64, //MACB_IOBASE
+	regs: u32, //MACB_IOBASE
 	is_big_endian: bool,
 	config: MacbConfig,
 
@@ -109,7 +110,7 @@ struct MacbDevice<'a> {
 	dummy_desc: &'a mut [DmaDesc],
 	dummy_desc_dma: usize,
 
-	phy_addr: u16,
+	phy_addr: u32,
 	pclk_rate: u64,
 	phy_interface: PhyInterfaceMode,
 }
@@ -522,17 +523,18 @@ fn macb_phy_init(macb: &mut MacbDevice, name: &str) -> i32 {
         return -10; // ENODEV
     }
 
-    phy_connect_dev(); // phy_connect_dev(addr: u32, interface: PhyInterfaceMode) ?
+    // Find macb->phydev
+    phy_connect_dev(&macb);
     phy_config();
 
-    let mut status: u16 = macb_mdio_read(macb.phy_addr, MII_BMSR);
+    let mut status = macb_mdio_read(macb.phy_addr, MII_BMSR) as u32;
     if (status & BMSR_LSTATUS) == 0 {
         // Try to re-negotiate if we don't have link already.
-        macb_phy_reset(name);
+        macb_phy_reset(&macb, name);
         let mut i = 0;
         while i < (MACB_AUTONEG_TIMEOUT / 100) {
             i += 1;
-            status = macb_mdio_read(macb.phy_addr, MII_BMSR);
+            status = macb_mdio_read(macb.phy_addr, MII_BMSR) as u32;
             if (status & BMSR_LSTATUS) != 0 {
                 // Delay a bit after the link is established, so that the next xfer does not fail
                 msdelay(10);
@@ -555,8 +557,8 @@ fn macb_phy_init(macb: &mut MacbDevice, name: &str) -> i32 {
     if gem_is_gigabit_capable() {
         lpa = macb_mdio_read(macb.phy_addr, MII_STAT1000);
 
-        if (lpa & (LPA_1000FULL | LPA_1000HALF | LPA_1000XFULL | LPA_1000XHALF)) != 0 {
-            duplex = if (lpa & (LPA_1000FULL | LPA_1000XFULL)) == 0 { 0 }else{ 1 }; 
+        if (lpa & (LPA_1000FULL | LPA_1000HALF | LPA_1000XFULL | LPA_1000XHALF) as u16) != 0 {
+            let duplex = if (lpa & (LPA_1000FULL | LPA_1000XFULL) as u16) == 0 { 0 }else{ 1 }; 
             let duplex_str = if duplex == 1 { "full" }else{ "half" };
             info!("{} GiB capable, link up, 1000Mbps {}-duplex (lpa: {:#x})", name, duplex_str, lpa);
             
@@ -624,17 +626,17 @@ fn macb_phy_find(macb: &mut MacbDevice) -> i32 {
     return -19; //ENODEV
 }
 
-fn macb_phy_reset(name: &str) {
-    let status: u16 = 0;
+fn macb_phy_reset(macb: &MacbDevice, name: &str) {
+    let status = 0;
     let adv = ADVERTISE_CSMA | ADVERTISE_ALL;
-    macb_mdio_write(phy_addr, MII_ADVERTISE, adv);
+    macb_mdio_write(macb.phy_addr, MII_ADVERTISE, adv as u16);
     info!("{} Starting autonegotiation...", name);
-    macb_mdio_write(phy_addr, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+    macb_mdio_write(macb.phy_addr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART) as u16);
 
     let mut i = 0;
     while i < (MACB_AUTONEG_TIMEOUT / 100) {
         i += 1;
-        status = macb_mdio_read(phy_addr, MII_BMSR);
+        status = macb_mdio_read(phy_addr, MII_BMSR) as u32;
         if (status & BMSR_ANEGCOMPLETE) != 0 {
             break;
         }
@@ -648,44 +650,55 @@ fn macb_phy_reset(name: &str) {
     }
 }
 
-fn phy_connect_dev(addr: u32, interface: PhyInterfaceMode) {
-    let phydev_addr = 0;
+fn phy_connect_dev(macb: &MacbDevice) {
+    let phydev_addr = macb.phy_addr as u32;
+    let phydev_interface = macb.phy_interface;
     let phydev_flags = 0;
 
     let phydev = 0xff;
-    let mask: u32 = if (addr >= 0) { 1 << addr } else { 0xffffffff };
+    let mask: u32 = if phydev_addr >= 0 { 1 << phydev_addr } else { 0xffffffff };
     /*
+    // Find phydev by maskaddr and interface
     if phydev == 0 {
         phydev = phy_find_by_mask(bus, mask, interface);
     }
     */
+    /*
+    phydev->flags: 0, 
+    phydev->addr: 0, 
+    phydev->interface: 1,
+    */
+
     if phydev != 0 {
     /* Soft Reset the PHY */
-    phy_reset(phydev_addr, phydev_flags);
+    phy_reset(phydev_addr, phydev_interface, phydev_flags);
     info!("Ethernet connected to PHY");
 
+    // phy_config needs phydev
+    vsc8541_config(phydev_addr, phydev_interface);
+
     } else {
-        error!("Could not get PHY for %s: addr %d\n", addr);
+        error!("Could not get PHY for ethernet: addr {}\n", macb.phy_addr);
     }
 }
 
-fn phy_reset(phydev_addr: u32, phydev_flags: u32) -> i32 {
+fn phy_reset(phydev_addr: u32, _interface: PhyInterfaceMode, phydev_flags: u32) -> i32 {
     let mut timeout = 500;
     let devad = MDIO_DEVAD_NONE;
 
-    if phydev_flags & PHY_FLAG_BROKEN_RESET {
+    if (phydev_flags & PHY_FLAG_BROKEN_RESET) != 0 {
         info!("PHY soft reset not supported");
         return 0;
     }
 
-    macb_mdio_write(phydev_addr, MII_BMCR, BMCR_RESET);
+    macb_mdio_write(phydev_addr, MII_BMCR, BMCR_RESET as u16);
     /*
      * Poll the control register for the reset bit to go to 0 (it is
      * auto-clearing).  This should happen within 0.5 seconds per the
      * IEEE spec.
      */
     let mut reg: u16 = macb_mdio_read(phydev_addr, MII_BMCR);
-    while ((reg & BMCR_RESET) != 0) && (timeout != 0) {
+    while ((reg & BMCR_RESET as u16) != 0) && (timeout != 0) {
         timeout -= 1;
         reg = macb_mdio_read(phydev_addr, MII_BMCR);
         if reg < 0 {
@@ -694,7 +707,7 @@ fn phy_reset(phydev_addr: u32, phydev_flags: u32) -> i32 {
         }
         usdelay(1000);
     }
-    if (reg & BMCR_RESET) != 0 {
+    if (reg & BMCR_RESET as u16) != 0 {
         error!("PHY reset timed out");
         return -1;
     }
@@ -703,7 +716,7 @@ fn phy_reset(phydev_addr: u32, phydev_flags: u32) -> i32 {
 
 fn phy_config() {
     // Microsemi VSC8541 PHY driver config fn: vsc8541_config()
-    vsc8541_config(interface);
+    // phy_config needs phydev struct after found by phy_connect
 }
 
 pub fn macb_mdio_write(phy_adr: u32, reg: u32, value: u16) {

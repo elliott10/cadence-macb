@@ -1,8 +1,9 @@
 use log::*;
 
+use crate::eth_macb::usdelay;
+use crate::eth_macb_ops::PhyInterfaceMode;
+use crate::eth_macb_ops::{macb_mdio_read, macb_mdio_write};
 use crate::mii_const::*;
-use crate::eth_macb_ops::{macb_mdio_write, macb_mdio_read};
-use crate::eth_macb_ops::PhyInterfaceMode::{self, *};
 
 /* Microsemi PHY ID's */
 const PHY_ID_VSC8530: u32 = 0x00070560;
@@ -26,11 +27,11 @@ const MSCC_PHY_PAGE_TR: u32 = 0x52B5; /* Token Ring Page registers */
 
 /* Std Page Register 18 */
 const MSCC_PHY_BYPASS_CONTROL: u32 = 18;
-//const PARALLEL_DET_IGNORE_ADVERTISED : u32 =   BIT(3);
+const PARALLEL_DET_IGNORE_ADVERTISED: u32 = BIT(3);
 
 /* Std Page Register 22 */
 const MSCC_PHY_EXT_CNTL_STATUS: u32 = 22;
-//const SMI_BROADCAST_WR_EN      : u32 =        BIT(0);
+const SMI_BROADCAST_WR_EN: u32 = BIT(0);
 
 /* Std Page Register 24 */
 const MSCC_PHY_EXT_PHY_CNTL_2: u32 = 24;
@@ -53,7 +54,7 @@ const MAC_IF_SELECTION_RMII: u32 = (1);
 const MAC_IF_SELECTION_RGMII: u32 = (2);
 const MAC_IF_SELECTION_POS: u32 = (11);
 const MAC_IF_SELECTION_WIDTH: u32 = (2);
-//const VSC8584_MAC_IF_SELECTION_MASK : u32 =    BIT(12);
+const VSC8584_MAC_IF_SELECTION_MASK: u32 = BIT(12);
 const VSC8584_MAC_IF_SELECTION_SGMII: u32 = 0;
 const VSC8584_MAC_IF_SELECTION_1000BASEX: u32 = 1;
 const VSC8584_MAC_IF_SELECTION_POS: u32 = 12;
@@ -69,7 +70,7 @@ const MEDIA_OP_MODE_POS: u32 = 8;
 
 /* Extended Page 1 Register 20E1 */
 const MSCC_PHY_ACTIPHY_CNTL: u32 = 20;
-//const PHY_ADDR_REVERSED	: u32 =	  BIT(9);
+const PHY_ADDR_REVERSED: u32 = BIT(9);
 
 /* Extended Page 1 Register 23E1 */
 
@@ -148,7 +149,7 @@ const INT_MEM_WRITE_EN: u32 = BIT(12);
 
 /* Extended page GPIO register 13G */
 const MSCC_CLKOUT_CNTL: u32 = 13;
-//const CLKOUT_ENABLE	: u32 =		BIT(15);
+const CLKOUT_ENABLE: u32 = BIT(15);
 //const CLKOUT_FREQ_MASK: u32 =		GENMASK(14, 13);
 const CLKOUT_FREQ_25M: u32 = (0x0 << 13);
 const CLKOUT_FREQ_50M: u32 = (0x1 << 13);
@@ -184,13 +185,13 @@ const PROC_CMD_NCOMPLETED_TIMEOUT_MS: u32 = 500;
 const MSCC_PHY_MAC_CFG_FASTLINK: u32 = 19;
 //const MAC_CFG_MASK	: u32 =		  GENMASK(15, 14);
 const MAC_CFG_SGMII: u32 = (0x00 << 14);
-//const MAC_CFG_QSGMII	: u32 =		  BIT(14);
+const MAC_CFG_QSGMII: u32 = BIT(14);
 
 /* Test Registers */
 const MSCC_PHY_TEST_PAGE_5: u32 = 5;
 
 const MSCC_PHY_TEST_PAGE_8: u32 = 8;
-//const TR_CLK_DISABLE		: u32 =	BIT(15);
+const TR_CLK_DISABLE: u32 = BIT(15);
 
 const MSCC_PHY_TEST_PAGE_9: u32 = 9;
 const MSCC_PHY_TEST_PAGE_20: u32 = 20;
@@ -231,8 +232,8 @@ const MSCC_PHY_TR_VGAGAIN10_L_VAL: u32 = (0x0001);
 const MSCC_PHY_TR_VGAGAIN10_ADDR: u32 = (0x0F92);
 
 /* General Timeout Values */
-const MSCC_PHY_RESET_TIMEOUT: u32 = (100);
-const MSCC_PHY_MICRO_TIMEOUT: u32 = (500);
+const MSCC_PHY_RESET_TIMEOUT: u16 = (100);
+const MSCC_PHY_MICRO_TIMEOUT: u16 = (500);
 
 const VSC8584_REVB: u32 = 0x0001;
 //const MSCC_DEV_REV_MASK: u32 =	GENMASK(3, 0);
@@ -247,68 +248,77 @@ fn BIT(nr: u32) -> u32 {
     1 << nr
 }
 
-pub fn vsc8541_config(interface: PhyInterfaceMode) -> i32 {
+pub fn vsc8541_config(phydev_addr: u32, interface: PhyInterfaceMode) -> i32 {
     let mut retval: i32 = -22; // EINVAL
-    let rmii_clk_out: u16 = 0;
-    let edge_rate = VSC_PHY_CLK_SLEW_RATE_4;
-    
+    let rmii_clk_out = 0;
+    let edge_rate = 4;
+    //let edge_rate = VSC_PHY_CLK_SLEW_RATE_4;
+
     /* For VSC8530/31 and VSC8540/41 the init scripts are the same */
-    mscc_vsc8531_vsc8541_init_scripts();
+    mscc_vsc8531_vsc8541_init_scripts(phydev_addr);
 
     /* For VSC8540/41 the only MAC modes are (G)MII and RMII/RGMII. */
     match interface {
-        MII | GMII | RMII | RGMII => {
-            retval = vsc8531_vsc8541_mac_config();
+        PhyInterfaceMode::MII
+        | PhyInterfaceMode::GMII
+        | PhyInterfaceMode::RMII
+        | PhyInterfaceMode::RGMII => {
+            retval = vsc8531_vsc8541_mac_config(phydev_addr, interface);
             if retval != 0 {
                 return retval;
             }
-            retval = mscc_phy_soft_reset(phydev);
+            retval = mscc_phy_soft_reset(phydev_addr);
             if retval != 0 {
                 return retval;
             }
         }
         _ => {
-            error!("PHY 8541 MAC i/f config Error: mac i/f = {:#x}", interface);
+            error!("PHY 8541 MAC i/f config Error: mac i/f = {:?}", interface);
             return -22;
         }
     }
 
     /* Default RMII Clk Output to 0=OFF/1=ON  */
-    retval = vsc8531_vsc8541_clk_skew_config();
+    retval = vsc8531_vsc8541_clk_skew_config(phydev_addr, interface);
     if retval != 0 {
         return retval;
     }
 
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2);
-    let mut reg_val: u16 = macb_mdio_read(phydev_addr, MSCC_PHY_WOL_MAC_CONTROL);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2 as u16);
+    let mut reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_WOL_MAC_CONTROL) as u32;
     /* Reg27E2 - Update Clk Slew Rate. */
     reg_val = bitfield_replace(reg_val, EDGE_RATE_CNTL_POS, EDGE_RATE_CNTL_WIDTH, edge_rate);
     /* Reg27E2 - Update RMII Clk Out. */
-    reg_val = bitfield_replace(reg_val, RMII_CLK_OUT_ENABLE_POS, RMII_CLK_OUT_ENABLE_WIDTH, rmii_clk_out);
+    reg_val = bitfield_replace(
+        reg_val,
+        RMII_CLK_OUT_ENABLE_POS,
+        RMII_CLK_OUT_ENABLE_WIDTH,
+        rmii_clk_out,
+    );
 
     /* Update Reg27E2 */
-    macb_mdio_write(phydev_addr, MSCC_PHY_WOL_MAC_CONTROL, reg_val);
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_PHY_WOL_MAC_CONTROL, reg_val as u16);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
 
     /* Configure the clk output */
-    retval = vsc8531_vsc8541_clkout_config(phydev);
+    retval = vsc8531_vsc8541_clkout_config(phydev_addr);
     if retval != 0 {
         return retval;
     }
 
-    genphy_config_aneg(phydev_autoneg)
+    genphy_config_aneg(phydev_addr)
 }
 
-fn mscc_phy_soft_reset() {
+fn mscc_phy_soft_reset(phydev_addr: u32) -> i32 {
     let mut timeout: u16 = MSCC_PHY_RESET_TIMEOUT;
     let mut reg_val: u16 = 0;
 
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
     reg_val = macb_mdio_read(phydev_addr, MII_BMCR);
-    macb_mdio_write(phydev_addr, MII_BMCR, reg_val | BMCR_RESET);
+    macb_mdio_write(phydev_addr, MII_BMCR, reg_val | (BMCR_RESET as u16));
 
     reg_val = macb_mdio_read(phydev_addr, MII_BMCR);
-    while (reg_val & BMCR_RESET != 0) && (timeout > 0) {
+    while (reg_val & (BMCR_RESET as u16) != 0) && (timeout > 0) {
         reg_val = macb_mdio_read(phydev_addr, MII_BMCR);
         timeout -= 1;
         usdelay(1000); /* 1 毫秒 */
@@ -321,30 +331,30 @@ fn mscc_phy_soft_reset() {
     0
 }
 
-fn mscc_vsc8531_vsc8541_init_scripts() {
+fn mscc_vsc8531_vsc8541_init_scripts(phydev_addr: u32) {
     // Set to Access Token Ring Registers
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_TR);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_TR as u16);
 
     // Update LinkDetectCtrl default to optimized values
     // Determined during Silicon Validation Testing
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_LINKDETCTRL_ADDR | MSCC_PHY_TR_16_READ,
+        (MSCC_PHY_TR_LINKDETCTRL_ADDR | MSCC_PHY_TR_16_READ) as u16,
     );
     let mut reg_val: u16 = macb_mdio_read(phydev_addr, MSCC_PHY_REG_TR_DATA_17);
     reg_val = bitfield_replace(
-        reg_val,
+        reg_val as u32,
         MSCC_PHY_TR_LINKDETCTRL_POS,
         MSCC_PHY_TR_LINKDETCTRL_WIDTH,
         MSCC_PHY_TR_LINKDETCTRL_VAL,
-    );
+    ) as u16;
 
     macb_mdio_write(phydev_addr, MSCC_PHY_REG_TR_DATA_17, reg_val);
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_LINKDETCTRL_ADDR | MSCC_PHY_TR_16_WRITE,
+        (MSCC_PHY_TR_LINKDETCTRL_ADDR | MSCC_PHY_TR_16_WRITE) as u16,
     );
 
     // Update VgaThresh100 defaults to optimized values
@@ -352,20 +362,20 @@ fn mscc_vsc8531_vsc8541_init_scripts() {
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_VGATHRESH100_ADDR | MSCC_PHY_TR_16_READ,
+        (MSCC_PHY_TR_VGATHRESH100_ADDR | MSCC_PHY_TR_16_READ) as u16,
     );
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_REG_TR_DATA_18);
     reg_val = bitfield_replace(
-        reg_val,
+        reg_val as u32,
         MSCC_PHY_TR_VGATHRESH100_POS,
         MSCC_PHY_TR_VGATHRESH100_WIDTH,
         MSCC_PHY_TR_VGATHRESH100_VAL,
-    );
+    ) as u16;
     macb_mdio_write(phydev_addr, MSCC_PHY_REG_TR_DATA_18, reg_val);
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_VGATHRESH100_ADDR | MSCC_PHY_TR_16_WRITE,
+        (MSCC_PHY_TR_VGATHRESH100_ADDR | MSCC_PHY_TR_16_WRITE) as u16,
     );
 
     // Update VgaGain10 defaults to optimized values
@@ -373,58 +383,61 @@ fn mscc_vsc8531_vsc8541_init_scripts() {
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_VGAGAIN10_ADDR | MSCC_PHY_TR_16_READ,
+        (MSCC_PHY_TR_VGAGAIN10_ADDR | MSCC_PHY_TR_16_READ) as u16,
     );
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_REG_TR_DATA_18);
     reg_val = bitfield_replace(
-        reg_val,
+        reg_val as u32,
         MSCC_PHY_TR_VGAGAIN10_U_POS,
         MSCC_PHY_TR_VGAGAIN10_U_WIDTH,
         MSCC_PHY_TR_VGAGAIN10_U_VAL,
-    );
+    ) as u16;
 
     macb_mdio_write(phydev_addr, MSCC_PHY_REG_TR_DATA_18, reg_val);
 
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_REG_TR_DATA_17);
     reg_val = bitfield_replace(
-        reg_val,
+        reg_val as u32,
         MSCC_PHY_TR_VGAGAIN10_L_POS,
         MSCC_PHY_TR_VGAGAIN10_L_WIDTH,
         MSCC_PHY_TR_VGAGAIN10_L_VAL,
-    );
+    ) as u16;
     macb_mdio_write(phydev_addr, MSCC_PHY_REG_TR_DATA_17, reg_val);
     macb_mdio_write(
         phydev_addr,
         MSCC_PHY_REG_TR_ADDR_16,
-        MSCC_PHY_TR_VGAGAIN10_ADDR | MSCC_PHY_TR_16_WRITE,
+        (MSCC_PHY_TR_VGAGAIN10_ADDR | MSCC_PHY_TR_16_WRITE) as u16,
     );
 
     // Set back to Access Standard Page Registers
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
 }
 
-fn vsc8531_vsc8541_mac_config(interface: PhyInterfaceMode) -> i32 {
+fn vsc8531_vsc8541_mac_config(phydev_addr: u32, interface: PhyInterfaceMode) -> i32 {
     let mut reg_val: u16 = 0;
-    let mut mac_if: u16 = 0;
-    let mut rx_clk_out: u16 = 0;
+    let mut mac_if = 0;
+    let mut rx_clk_out = 0;
 
     /* For VSC8530/31 the only MAC modes are RMII/RGMII. */
     /* For VSC8540/41 the only MAC modes are (G)MII and RMII/RGMII. */
     /* Setup MAC Configuration */
     match interface {
-        MII | GMII => {
+        PhyInterfaceMode::MII | PhyInterfaceMode::GMII => {
             //Set Reg23.12:11=0
             mac_if = MAC_IF_SELECTION_GMII;
             //Set Reg20E2.11=1
             rx_clk_out = RX_CLK_OUT_DISABLE;
         }
-        RMII => {
+        PhyInterfaceMode::RMII => {
             //Set Reg23.12:11=1
             mac_if = MAC_IF_SELECTION_RMII;
             //Set Reg20E2.11=0
             rx_clk_out = RX_CLK_OUT_NORMAL;
         }
-        RGMII | RGMII_ID | RGMII_TXID | RGMII_RXID => {
+        PhyInterfaceMode::RGMII
+        | PhyInterfaceMode::RGMII_ID
+        | PhyInterfaceMode::RGMII_TXID
+        | PhyInterfaceMode::RGMII_RXID => {
             //Set Reg23.12:11=2
             mac_if = MAC_IF_SELECTION_RGMII;
             //Set Reg20E2.11=0
@@ -432,81 +445,108 @@ fn vsc8531_vsc8541_mac_config(interface: PhyInterfaceMode) -> i32 {
         }
         _ => {
             error!(
-                "MSCC PHY - INVALID MAC i/f Config: mac i/f = {:#x}",
+                "MSCC PHY - INVALID MAC i/f Config: mac i/f = {:?}",
                 interface
             );
             return -1;
         }
     }
 
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_EXT_PHY_CNTL_1_REG);
     // Set MAC i/f bits Reg23.12:11
     reg_val = bitfield_replace(
-        reg_val,
+        reg_val as u32,
         MAC_IF_SELECTION_POS,
         MAC_IF_SELECTION_WIDTH,
         mac_if,
-    );
+    ) as u16;
 
     // Update Reg23.12:11
     macb_mdio_write(phydev_addr, MSCC_PHY_EXT_PHY_CNTL_1_REG, reg_val);
 
     // Setup ExtPg_2 Register Access
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2 as u16);
 
     // Read Reg20E2
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_RGMII_CNTL_REG);
-    reg_val = bitfield_replace(reg_val, RX_CLK_OUT_POS, RX_CLK_OUT_WIDTH, rx_clk_out);
+    reg_val = bitfield_replace(reg_val as u32, RX_CLK_OUT_POS, RX_CLK_OUT_WIDTH, rx_clk_out) as u16;
 
     // Update Reg20E2.11
     macb_mdio_write(phydev_addr, MSCC_PHY_RGMII_CNTL_REG, reg_val);
 
     // Before leaving - Change back to Std Page Register Access
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
 
     0
 }
 
-fn vsc8531_vsc8541_clk_skew_config(interface: PhyInterfaceMode) {
+fn vsc8531_vsc8541_clk_skew_config(phydev_addr: u32, interface: PhyInterfaceMode) -> i32 {
+    /*
+    // VSC_PHY_RGMII_DELAY_200_PS: 0, VSC_PHY_RGMII_DELAY_2000_PS: 4
     let mut rx_clk_skew = VSC_PHY_RGMII_DELAY_200_PS;
     let mut tx_clk_skew = VSC_PHY_RGMII_DELAY_200_PS;
+    */
+    let mut rx_clk_skew = 0;
+    let mut tx_clk_skew = 0;
 
-    if (interface == RGMII_RXID) || (interface == RGMII_ID) {
-        rx_clk_skew = VSC_PHY_RGMII_DELAY_2000_PS;
+    if (interface == PhyInterfaceMode::RGMII_RXID) || (interface == PhyInterfaceMode::RGMII_ID) {
+        //rx_clk_skew = VSC_PHY_RGMII_DELAY_2000_PS;
+        rx_clk_skew = 4;
     }
-    if (interface == RGMII_TXID) || (interface == RGMII_ID) {
-        tx_clk_skew = VSC_PHY_RGMII_DELAY_2000_PS;
+    if (interface == PhyInterfaceMode::RGMII_TXID) || (interface == PhyInterfaceMode::RGMII_ID) {
+        //tx_clk_skew = VSC_PHY_RGMII_DELAY_2000_PS;
+        tx_clk_skew = 4;
     }
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2);
-    let mut reg_val: u16 = macb_mdio_read(phydev_addr, MSCC_PHY_RGMII_CNTL_REG);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_EXT2 as u16);
+    let mut reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_RGMII_CNTL_REG) as u32;
 
     // Reg20E2 - Update RGMII RX_Clk Skews.
-    reg_val = bitfield_replace(reg_val, RGMII_RX_CLK_DELAY_POS, RGMII_RX_CLK_DELAY_WIDTH, rx_clk_skew);
+    reg_val = bitfield_replace(
+        reg_val,
+        RGMII_RX_CLK_DELAY_POS,
+        RGMII_RX_CLK_DELAY_WIDTH,
+        rx_clk_skew,
+    );
     // Reg20E2 - Update RGMII TX_Clk Skews.
-    reg_val = bitfield_replace(reg_val, RGMII_TX_CLK_DELAY_POS, RGMII_TX_CLK_DELAY_WIDTH, tx_clk_skew);
+    reg_val = bitfield_replace(
+        reg_val,
+        RGMII_TX_CLK_DELAY_POS,
+        RGMII_TX_CLK_DELAY_WIDTH,
+        tx_clk_skew,
+    );
 
-    macb_mdio_write(phydev_addr, MSCC_PHY_RGMII_CNTL_REG, reg_val);
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_PHY_RGMII_CNTL_REG, reg_val as u16);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
+    0
 }
 
-fn vsc8531_vsc8541_clkout_config() -> i32 {
-    let clkout_rate: u32 = 0;
+fn vsc8531_vsc8541_clkout_config(phydev_addr: u32) -> i32 {
+    let clkout_rate: u32 = 0; //clkout_rate: 0
+    let mut reg_val = 0;
 
     match clkout_rate {
-        0 => {reg_val = 0;},
-        25000000 => {reg_val = CLKOUT_FREQ_25M | CLKOUT_ENABLE;},
-        50000000 => {reg_val = CLKOUT_FREQ_50M | CLKOUT_ENABLE;},
-        125000000 => {reg_val = CLKOUT_FREQ_125M | CLKOUT_ENABLE;},
+        0 => {
+            reg_val = 0;
+        }
+        25000000 => {
+            reg_val = CLKOUT_FREQ_25M | CLKOUT_ENABLE;
+        }
+        50000000 => {
+            reg_val = CLKOUT_FREQ_50M | CLKOUT_ENABLE;
+        }
+        125000000 => {
+            reg_val = CLKOUT_FREQ_125M | CLKOUT_ENABLE;
+        }
         _ => {
             error!("PHY 8530/31 invalid clkout rate {}", clkout_rate);
             return -1;
-        },
+        }
     }
 
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_GPIO);
-    macb_mdio_write(phydev_addr, MSCC_CLKOUT_CNTL, reg_val);
-    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_GPIO as u16);
+    macb_mdio_write(phydev_addr, MSCC_CLKOUT_CNTL, reg_val as u16);
+    macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
     0
 }
 
@@ -528,20 +568,28 @@ const AUTONEG_ENABLE: u32 = 1;
  *   advertising, and then restart auto-negotiation.  If it is not
  *   enabled, then we write the BMCR.
  */
-pub fn genphy_config_aneg(phydev_autoneg: u32) -> i32 {
+pub fn genphy_config_aneg(phydev_addr: u32) -> i32 {
+    let phydev_autoneg = AUTONEG_ENABLE;
+    let phydev_speed = 0;
+    let phydev_duplex = -1;
+    let phydev_link = 0;
+
+    let mut phydev_advertising = 0x2ff;
+    let phydev_supported = 0x2ff;
+
     if phydev_autoneg != AUTONEG_ENABLE {
-        return genphy_setup_forced();
+        return genphy_setup_forced(phydev_addr, phydev_speed, phydev_duplex);
     }
-    let result = genphy_config_advert();
+    let result = genphy_config_advert(phydev_addr, &mut phydev_advertising, phydev_supported);
     // error
     if result < 0 {
         return result;
     }
     if result == 0 {
         // Advertisment hasn't changed, but maybe aneg was never on to begin with?  Or maybe phy was isolated?
-        let ctl = macb_mdio_read(phydev_addr, MII_BMCR);
+        let ctl = macb_mdio_read(phydev_addr, MII_BMCR) as u32;
         if ctl < 0 {
-            return ctl;
+            return ctl as i32;
         }
         if (((ctl & BMCR_ANENABLE) == 0) || ((ctl & BMCR_ISOLATE) != 0)) {
             // do restart aneg
@@ -551,26 +599,26 @@ pub fn genphy_config_aneg(phydev_autoneg: u32) -> i32 {
 
     // Only restart aneg if we are advertising something different than we were before.
     if result > 0 {
-        result = genphy_restart_aneg();
+        result = genphy_restart_aneg(phydev_addr);
     }
     result
 }
 
-fn genphy_setup_forced(speed: u32, duplex: u32) -> i32 {
-    let ctl: u32 = BMCR_ANRESTART;
+fn genphy_setup_forced(phydev_addr: u32, speed: i32, duplex: i32) -> i32 {
+    let ctl = BMCR_ANRESTART;
 
-    if speed == SPEED_1000 {
+    if speed == SPEED_1000 as i32 {
         ctl |= BMCR_SPEED1000;
-    } else if speed == SPEED_100 {
+    } else if speed == SPEED_100 as i32 {
         ctl |= BMCR_SPEED100;
     }
 
-    if duplex == DUPLEX_FULL {
+    if duplex == DUPLEX_FULL as i32 {
         ctl |= BMCR_FULLDPLX;
     }
 
     info!("genphy_setup_forced Write MII_BMCR: {:#x}", ctl);
-    macb_mdio_write(phydev_addr, MII_BMCR, ctl);
+    macb_mdio_write(phydev_addr, MII_BMCR, ctl as u16);
     0
 }
 
@@ -583,82 +631,86 @@ fn genphy_setup_forced(speed: u32, duplex: u32) -> i32 {
  *   what is supported.  Returns < 0 on error, 0 if the PHY's advertisement
  *   hasn't changed, and > 0 if it has changed.
  */
-fn genphy_config_advert(phydev_advertising: mut u32, phydev_supported: u32) -> i32 {
+fn genphy_config_advert(
+    phydev_addr: u32,
+    phydev_advertising: &mut u32,
+    phydev_supported: u32,
+) -> i32 {
     let mut changed = 0;
     /* Only allow advertising what this PHY supports */
-    phydev_advertising &= phydev_supported;
-    let advertise: u32 = phydev_advertising;
+    *phydev_advertising &= phydev_supported;
+    let advertise: u32 = *phydev_advertising;
 
     /* Setup standard advertisement */
-    let mut adv: u32 = macb_mdio_read(phydev_addr, MII_ADVERTISE);
+    let mut adv = macb_mdio_read(phydev_addr, MII_ADVERTISE) as u32;
     let mut oldadv = adv;
     if adv < 0 {
-        return adv;
+        return adv as i32;
     }
 
     adv &= !(ADVERTISE_ALL | ADVERTISE_100BASE4 | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM);
-if (advertise & ADVERTISED_10baseT_Half) != 0 {
-       adv |= ADVERTISE_10HALF;
-}
-if (advertise & ADVERTISED_10baseT_Full) != 0 {
-       adv |= ADVERTISE_10FULL;
-}
-if (advertise & ADVERTISED_100baseT_Half) != 0 {
-       adv |= ADVERTISE_100HALF;
-}
-if (advertise & ADVERTISED_100baseT_Full) != 0 {
-       adv |= ADVERTISE_100FULL;
-}
-if (advertise & ADVERTISED_Pause) != 0 {
-       adv |= ADVERTISE_PAUSE_CAP;
-}
-if (advertise & ADVERTISED_Asym_Pause) != 0 {
-       adv |= ADVERTISE_PAUSE_ASYM;
-}
-if (advertise & ADVERTISED_1000baseX_Half) != 0 {
-       adv |= ADVERTISE_1000XHALF;
-}
-if (advertise & ADVERTISED_1000baseX_Full) != 0 {
-       adv |= ADVERTISE_1000XFULL;
-}
+    if (advertise & ADVERTISED_10baseT_Half) != 0 {
+        adv |= ADVERTISE_10HALF;
+    }
+    if (advertise & ADVERTISED_10baseT_Full) != 0 {
+        adv |= ADVERTISE_10FULL;
+    }
+    if (advertise & ADVERTISED_100baseT_Half) != 0 {
+        adv |= ADVERTISE_100HALF;
+    }
+    if (advertise & ADVERTISED_100baseT_Full) != 0 {
+        adv |= ADVERTISE_100FULL;
+    }
+    if (advertise & ADVERTISED_Pause) != 0 {
+        adv |= ADVERTISE_PAUSE_CAP;
+    }
+    if (advertise & ADVERTISED_Asym_Pause) != 0 {
+        adv |= ADVERTISE_PAUSE_ASYM;
+    }
+    if (advertise & ADVERTISED_1000baseX_Half) != 0 {
+        adv |= ADVERTISE_1000XHALF;
+    }
+    if (advertise & ADVERTISED_1000baseX_Full) != 0 {
+        adv |= ADVERTISE_1000XFULL;
+    }
 
-if adv != oldadv {
-    macb_mdio_write(phydev_addr, MII_ADVERTISE, adv);
-    changed = 1;
-}
+    if adv != oldadv {
+        macb_mdio_write(phydev_addr, MII_ADVERTISE, adv as u16);
+        changed = 1;
+    }
 
-let bmsr: u32 = macb_mdio_read(phydev_addr, MII_BMSR);
-if bmsr < 0 {
-    return bmsr;
-}
-/* Per 802.3-2008, Section 22.2.4.2.16 Extended status all
- * 1000Mbits/sec capable PHYs shall have the BMSR_ESTATEN bit set to a
- * logical 1.
- */
- if (bmsr & BMSR_ESTATEN) == 0 {
-         return changed;
- }
+    let bmsr: u32 = macb_mdio_read(phydev_addr, MII_BMSR) as u32;
+    if bmsr < 0 {
+        return bmsr as i32;
+    }
+    /* Per 802.3-2008, Section 22.2.4.2.16 Extended status all
+     * 1000Mbits/sec capable PHYs shall have the BMSR_ESTATEN bit set to a
+     * logical 1.
+     */
+    if (bmsr & BMSR_ESTATEN) == 0 {
+        return changed;
+    }
 
- /* Configure gigabit if it's supported */
- adv = macb_mdio_read(phydev_addr, MII_CTRL1000);
- oldadv = adv;
-     if adv < 0 {
-             return adv;
-     }
-     adv &= !(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
-     if (phydev_supported & (SUPPORTED_1000baseT_Half | SUPPORTED_1000baseT_Full)) != 0 {
-             if (advertise & SUPPORTED_1000baseT_Half) != 0 {
-                     adv |= ADVERTISE_1000HALF;
-             }
-             if (advertise & SUPPORTED_1000baseT_Full) != 0 {
-                     adv |= ADVERTISE_1000FULL;
-             }
-     }
-     if adv != oldadv {
-             changed = 1;
-     }
+    /* Configure gigabit if it's supported */
+    adv = macb_mdio_read(phydev_addr, MII_CTRL1000) as u32;
+    oldadv = adv;
+    if adv < 0 {
+        return adv as i32;
+    }
+    adv &= !(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
+    if (phydev_supported & (SUPPORTED_1000baseT_Half | SUPPORTED_1000baseT_Full)) != 0 {
+        if (advertise & SUPPORTED_1000baseT_Half) != 0 {
+            adv |= ADVERTISE_1000HALF;
+        }
+        if (advertise & SUPPORTED_1000baseT_Full) != 0 {
+            adv |= ADVERTISE_1000FULL;
+        }
+    }
+    if adv != oldadv {
+        changed = 1;
+    }
     info!("genphy_config_advert Write MII_CTRL1000: {:#x}", adv);
-    macb_mdio_write(phydev_addr, MII_CTRL1000, adv);
+    macb_mdio_write(phydev_addr, MII_CTRL1000, adv as u16);
     changed
 }
 
@@ -666,12 +718,12 @@ if bmsr < 0 {
  * genphy_restart_aneg - Enable and Restart Autonegotiation
  * @phydev: target phy_device struct
  */
-fn genphy_restart_aneg() -> i32 {
-    let mut ctl: u32 = macb_mdio_read(phydev_addr, MII_BMCR);
+fn genphy_restart_aneg(phydev_addr: u32) -> i32 {
+    let mut ctl: u32 = macb_mdio_read(phydev_addr, MII_BMCR) as u32;
     ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
 
     /* Don't isolate the PHY if we're negotiating */
     ctl &= !(BMCR_ISOLATE);
-    macb_mdio_write(phydev_addr, MII_BMCR, ctl);
+    macb_mdio_write(phydev_addr, MII_BMCR, ctl as u16);
     0
 }
