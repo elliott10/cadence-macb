@@ -244,7 +244,7 @@ const MSCC_VSC8574_REVB_INT8051_FW_CRC: u32 = 0x29e8;
 const MSCC_VSC8584_REVB_INT8051_FW_START_ADDR: u32 = 0xe800;
 const MSCC_VSC8584_REVB_INT8051_FW_CRC: u32 = 0xfb48;
 
-fn BIT(nr: u32) -> u32 {
+const fn BIT(nr: u32) -> u32 {
     1 << nr
 }
 
@@ -253,6 +253,8 @@ pub fn vsc8541_config(phydev_addr: u32, interface: PhyInterfaceMode) -> i32 {
     let rmii_clk_out = 0;
     let edge_rate = 4;
     //let edge_rate = VSC_PHY_CLK_SLEW_RATE_4;
+
+    info!("vsc8541_config");
 
     /* For VSC8530/31 and VSC8540/41 the init scripts are the same */
     mscc_vsc8531_vsc8541_init_scripts(phydev_addr);
@@ -313,6 +315,7 @@ fn mscc_phy_soft_reset(phydev_addr: u32) -> i32 {
     let mut timeout: u16 = MSCC_PHY_RESET_TIMEOUT;
     let mut reg_val: u16 = 0;
 
+    info!("mscc_phy_soft_reset");
     macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
     reg_val = macb_mdio_read(phydev_addr, MII_BMCR);
     macb_mdio_write(phydev_addr, MII_BMCR, reg_val | (BMCR_RESET as u16));
@@ -332,6 +335,8 @@ fn mscc_phy_soft_reset(phydev_addr: u32) -> i32 {
 }
 
 fn mscc_vsc8531_vsc8541_init_scripts(phydev_addr: u32) {
+    info!("mscc_vsc8531_vsc8541_init_scripts");
+
     // Set to Access Token Ring Registers
     macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_TR as u16);
 
@@ -462,6 +467,8 @@ fn vsc8531_vsc8541_mac_config(phydev_addr: u32, interface: PhyInterfaceMode) -> 
         mac_if,
     ) as u16;
 
+    info!("vsc8531_vsc8541_mac_config reg_val: {:#x}", reg_val);
+
     // Update Reg23.12:11
     macb_mdio_write(phydev_addr, MSCC_PHY_EXT_PHY_CNTL_1_REG, reg_val);
 
@@ -471,6 +478,8 @@ fn vsc8531_vsc8541_mac_config(phydev_addr: u32, interface: PhyInterfaceMode) -> 
     // Read Reg20E2
     reg_val = macb_mdio_read(phydev_addr, MSCC_PHY_RGMII_CNTL_REG);
     reg_val = bitfield_replace(reg_val as u32, RX_CLK_OUT_POS, RX_CLK_OUT_WIDTH, rx_clk_out) as u16;
+
+    info!("vsc8531_vsc8541_mac_config reg_val: {:#x}", reg_val);
 
     // Update Reg20E2.11
     macb_mdio_write(phydev_addr, MSCC_PHY_RGMII_CNTL_REG, reg_val);
@@ -516,6 +525,7 @@ fn vsc8531_vsc8541_clk_skew_config(phydev_addr: u32, interface: PhyInterfaceMode
         tx_clk_skew,
     );
 
+    info!("vsc8531_vsc8541_clk_skew_config reg_val: {:#x}", reg_val);
     macb_mdio_write(phydev_addr, MSCC_PHY_RGMII_CNTL_REG, reg_val as u16);
     macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_STD as u16);
     0
@@ -543,6 +553,7 @@ fn vsc8531_vsc8541_clkout_config(phydev_addr: u32) -> i32 {
             return -1;
         }
     }
+    info!("vsc8531_vsc8541_clkout_config reg_val: {:#x}", reg_val);
 
     macb_mdio_write(phydev_addr, MSCC_EXT_PAGE_ACCESS, MSCC_PHY_PAGE_GPIO as u16);
     macb_mdio_write(phydev_addr, MSCC_CLKOUT_CNTL, reg_val as u16);
@@ -580,7 +591,7 @@ pub fn genphy_config_aneg(phydev_addr: u32) -> i32 {
     if phydev_autoneg != AUTONEG_ENABLE {
         return genphy_setup_forced(phydev_addr, phydev_speed, phydev_duplex);
     }
-    let result = genphy_config_advert(phydev_addr, &mut phydev_advertising, phydev_supported);
+    let mut result = genphy_config_advert(phydev_addr, &mut phydev_advertising, phydev_supported);
     // error
     if result < 0 {
         return result;
@@ -605,7 +616,7 @@ pub fn genphy_config_aneg(phydev_addr: u32) -> i32 {
 }
 
 fn genphy_setup_forced(phydev_addr: u32, speed: i32, duplex: i32) -> i32 {
-    let ctl = BMCR_ANRESTART;
+    let mut ctl = BMCR_ANRESTART;
 
     if speed == SPEED_1000 as i32 {
         ctl |= BMCR_SPEED1000;
@@ -724,6 +735,8 @@ fn genphy_restart_aneg(phydev_addr: u32) -> i32 {
 
     /* Don't isolate the PHY if we're negotiating */
     ctl &= !(BMCR_ISOLATE);
+
+    info!("genphy_restart_aneg MII_BMCR: {:#x}", ctl);
     macb_mdio_write(phydev_addr, MII_BMCR, ctl as u16);
     0
 }

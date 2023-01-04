@@ -1,9 +1,10 @@
 use crate::macb_const::*;
+use crate::eth_macb_ops::*;
 use core::arch::asm;
-use log::info;
+use log::*;
 
 // clk -> reg
-pub const TIMER_CLOCK: u32 = 1000000;
+pub const TIMER_CLOCK: u64 = 1000000;
 
 pub const RESET_BASE: u32 = 0;
 pub const PRCI_RESETREG_OFFSET: u32 = 0x28;
@@ -44,7 +45,7 @@ pub fn open() {
 
     // 准备每次的收发包
     // macb_start, _macb_init
-    //macb_start();
+    macb_start();
 
     info!("macb loop in open()");
     loop {
@@ -158,7 +159,8 @@ fn macb_write_hwaddr(enetaddr: &[u8; 6]) -> i32 {
       writev((MACB_IOBASE + MACB_SA1B) as *mut u32, hwaddr_bottom);
 
       let hwaddr_top: u16 = (enetaddr[4] as u16) | (enetaddr[5] as u16) << 8;
-      writev((MACB_IOBASE + MACB_SA1T) as *mut u16, hwaddr_top);
+      //writev((MACB_IOBASE + MACB_SA1T) as *mut u16, hwaddr_top);
+      writev((MACB_IOBASE + MACB_SA1T) as *mut u32, hwaddr_top as u32);
 
       info!("macb_write_hwaddr {:#x} {:#x}", hwaddr_top, hwaddr_bottom);
 
@@ -274,7 +276,7 @@ pub fn usdelay(us: u64) {
     while t2 >= t1 {
         t1 = get_cycle();
     }
-    info!("usdelay, get_cycle: {}", t1);
+    info!("usdelay get_cycle: {}", t1);
 }
 
 // 毫秒(ms)
@@ -287,11 +289,19 @@ pub fn readv<T>(src: *const T) -> T {
     unsafe { core::ptr::read_volatile(phys_to_virt(src as usize) as *const T) }
 }
 
+pub fn writev(dst: *mut u32, value: u32) {
+    debug!("write_volatile {:#x} = {:#x}", dst as usize, value);
+    unsafe {
+        core::ptr::write_volatile(dst, value);
+    }
+}
+/*
 pub fn writev<T>(dst: *mut T, value: T) {
     unsafe {
         core::ptr::write_volatile(phys_to_virt(dst as usize) as *mut T, value);
     }
 }
+*/
 
 pub fn phys_to_virt(addr: usize) -> usize {
     addr
