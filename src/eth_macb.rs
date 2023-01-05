@@ -30,7 +30,7 @@ pub trait MemMapping {
     fn dma_free_coherent(paddr: usize, pages: usize);
 }
 
-pub fn open() {
+pub fn open<'a>() -> Result<MacbDevice<'a>, i32> {
     // device_probe
 
     // macb_eth_of_to_plat(); check iobase addr
@@ -44,13 +44,8 @@ pub fn open() {
 
 
     // 准备每次的收发包
-    // macb_start, _macb_init
-    macb_start();
-
-    info!("macb loop in open()");
-    loop {
-        unsafe{ asm!("wfi"); }
-    }
+    let macb = macb_start();
+    Ok(macb)
 }
 
 fn clk_set_defaults(clk_defaults_stage: usize) {
@@ -276,7 +271,7 @@ pub fn usdelay(us: u64) {
     while t2 >= t1 {
         t1 = get_cycle();
     }
-    info!("usdelay get_cycle: {}", t1);
+    trace!("usdelay get_cycle: {}", t1);
 }
 
 // 毫秒(ms)
