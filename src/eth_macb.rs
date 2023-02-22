@@ -157,6 +157,8 @@ fn macb_write_hwaddr(enetaddr: &[u8; 6]) -> i32 {
       //writev((MACB_IOBASE + MACB_SA1T) as *mut u16, hwaddr_top);
       writev((MACB_IOBASE + MACB_SA1T) as *mut u32, hwaddr_top as u32);
 
+      fence();
+
       info!("macb_write_hwaddr {:#x} {:#x}", hwaddr_top, hwaddr_bottom);
 
       0
@@ -280,12 +282,19 @@ pub fn msdelay(ms: u64) {
     usdelay(ms * 1000);
 }
 
+pub fn fence() {
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("fence iorw, iorw");
+    }
+}
+
 pub fn readv<T>(src: *const T) -> T {
     unsafe { core::ptr::read_volatile(phys_to_virt(src as usize) as *const T) }
 }
 
 pub fn writev(dst: *mut u32, value: u32) {
-    debug!("write_volatile {:#x} = {:#x}", dst as usize, value);
+    //debug!("write_volatile {:#x} = {:#x}", dst as usize, value);
     unsafe {
         core::ptr::write_volatile(dst, value);
     }

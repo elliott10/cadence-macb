@@ -27,7 +27,8 @@ pub const MACB_AUTONEG_TIMEOUT: u32 = 5000000;
 
 pub const HW_DMA_CAP_32B: u32 = 0;
 pub const HW_DMA_CAP_64B: u32 = 1;
-pub const DMA_DESC_SIZE: usize = 16;
+//pub const DMA_DESC_SIZE: usize = 16;
+pub const DMA_DESC_SIZE: usize = 8;
 
 pub const RXBUF_FRMLEN_MASK: u32 = 0x00000fff;
 pub const TXBUF_FRMLEN_MASK: u32 = 0x000007ff;
@@ -98,12 +99,13 @@ pub struct MacbDevice<'a> {
     tx_tail: usize,
     next_rx_tail: usize,
     wrapped: bool,
-    //void			*rx_buffer;
-    //void			*tx_buffer;
+    recv_buffers: Vec<usize>,
+    send_buffers: Vec<usize>,
     rx_ring: &'a mut [DmaDesc],
     tx_ring: &'a mut [DmaDesc],
-    rx_buffer_size: usize,
+    buffer_size: usize,
     rx_buffer_dma: usize,
+    tx_buffer_dma: usize,
     rx_ring_dma: usize,
     tx_ring_dma: usize,
     dummy_desc: &'a mut [DmaDesc],
@@ -126,6 +128,7 @@ pub struct MacbConfig {
     usrio_clken: u32,
 }
 
+/// 注意: 请在自定义操作系统中实现该结构体
 pub struct MEM;
 impl MemMapping for MEM {
     fn dma_alloc_coherent(pages: usize) -> usize {
@@ -152,7 +155,7 @@ impl MemMapping for MEM {
 
 //pub fn macb_start(macb: &mut MacbDevice, name: &str) -> i32 {
 pub fn macb_start<'a>() -> MacbDevice<'a> {
-    let rx_buffer_size = GEM_RX_BUFFER_SIZE;
+    let buffer_size = GEM_RX_BUFFER_SIZE;
     let name = "ethernet@10090000";
 
     // sifive_config
@@ -184,14 +187,14 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
 
     let tx_ring = unsafe {
         slice::from_raw_parts_mut(
-            tx_ring_dma as *mut DmaDesc,
+            phys_to_virt(tx_ring_dma) as *mut DmaDesc,
             MACB_TX_RING_SIZE * DMA_DESC_SIZE / size_of::<DmaDesc>(), // 4096/16 = 256 个 dma_desc ?
         )
     };
 
     let rx_ring = unsafe {
         slice::from_raw_parts_mut(
-            rx_ring_dma as *mut DmaDesc,
+            phys_to_virt(rx_ring_dma) as *mut DmaDesc,
             MACB_RX_RING_SIZE * DMA_DESC_SIZE / size_of::<DmaDesc>(),
         )
     };
@@ -201,7 +204,7 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
 
     // 一起申请所有RX内存
     let alloc_rx_buffer_pages =
-        ((MACB_RX_RING_SIZE * rx_buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
+        ((MACB_RX_RING_SIZE * buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
     let rx_buffer_dma: usize = MEM::dma_alloc_coherent(alloc_rx_buffer_pages);
 
     info!("Set ring desc buffer for RX");
@@ -222,14 +225,19 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
         rx_ring[count].addr = lower_32_bits(paddr);
 
         recv_buffers.push(phys_to_virt(paddr as usize));
-        paddr += rx_buffer_size as u64;
+        paddr += buffer_size as u64;
 
         // sync memery, fence指令？
     }
     flush_dcache_range(); // RX dma ring and buffer
 
+    // 一起申请所有TX内存
+    let alloc_tx_buffer_pages =
+        ((MACB_TX_RING_SIZE * buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
+    let tx_buffer_dma: usize = MEM::dma_alloc_coherent(alloc_tx_buffer_pages);
     info!("Set ring desc buffer for TX");
-    paddr = 0;
+    count = 0;
+    paddr = tx_buffer_dma as u64;
     for i in 0..MACB_TX_RING_SIZE {
         if (config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
             count = i * 2;
@@ -244,8 +252,12 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
         } else {
             tx_ring[count].ctrl = (1 << MACB_TX_USED_OFFSET);
         }
+        // Used – must be zero for the controller to read data to the transmit buffer.
+        // The controller sets this to one for the first buffer of a frame once it has been successfully transmitted.
+        // Software must clear this bit before the buffer can be used again.
 
         send_buffers.push(phys_to_virt(paddr as usize));
+        paddr += buffer_size as u64;
     }
     flush_dcache_range(); // TX dma ring
 
@@ -275,12 +287,13 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
         tx_tail: 0,
         next_rx_tail: 0,
         wrapped: false,
-        //void			*rx_buffer;
-        //void			*tx_buffer;
+        recv_buffers,
+        send_buffers,
         rx_ring,
         tx_ring,
-        rx_buffer_size,
+        buffer_size,
         rx_buffer_dma,
+        tx_buffer_dma,
         rx_ring_dma,
         tx_ring_dma,
         dummy_desc,
@@ -363,37 +376,59 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
         (MACB_IOBASE + MACB_NCR) as *mut u32,
         (1 << MACB_TE_OFFSET) | (1 << MACB_RE_OFFSET),
     );
+    fence();
+
+    // 预防丢失首个TX包
+    msdelay(90);
 
     macb
 }
 
 pub fn macb_send(macb: &mut MacbDevice, packet: &[u8]) -> i32 {
     let mut tx_head = macb.tx_head;
-    let length = packet.len() as u32;
+    let length = packet.len();
     //let paddr: u64 = flush_dcache_range(packet, length); // DMA_TO_DEVICE
-    let paddr: u64 = packet.as_ptr() as u64;
+    //let paddr: u64 = packet.as_ptr() as u64;
 
-    let mut ctrl = length & TXBUF_FRMLEN_MASK;
+    let mut ctrl = length as u32 & TXBUF_FRMLEN_MASK;
+
+    //Last buffer, when set this bit indicates that the last buffer in the current frame has been reached.
     ctrl |= 1 << MACB_TX_LAST_OFFSET;
+    // Clear Used bit
+    ctrl &= !(1 << MACB_TX_USED_OFFSET);
+
     if tx_head == (MACB_TX_RING_SIZE - 1) {
+        // ring的最后一个成员TX_WRAP
+        //Wrap - marks last descriptor in transmit buffer descriptor list.
+        //This can be set for any buffer within the frame.
         ctrl |= 1 << MACB_TX_WRAP_OFFSET;
-        macb.tx_head = 0;
+
+        macb.tx_head = 0; //预先把下一个head归为0
     } else {
         macb.tx_head += 1;
     }
     if (macb.config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
         tx_head = tx_head * 2;
-        macb.tx_ring[tx_head + 1].addr = upper_32_bits(paddr); // DmaDesc64.addrh
+        //macb.tx_ring[tx_head + 1].addr = upper_32_bits(paddr); // DmaDesc64.addrh
     }
-    macb.tx_ring[tx_head].ctrl = ctrl;
-    macb.tx_ring[tx_head].addr = lower_32_bits(paddr);
-    debug!(
-        "Send packet: {}, DmaDesc: {:#x?}",
-        length, macb.tx_ring[tx_head]
-    );
 
+    let txbuf = unsafe {
+        slice::from_raw_parts_mut(phys_to_virt(macb.send_buffers[tx_head]) as *mut u8, length)
+    };
+    txbuf.copy_from_slice(packet);
+
+    macb.tx_ring[tx_head].ctrl = ctrl;
+    //初始化时已经填过tx paddr
+    //macb.tx_ring[tx_head].addr = lower_32_bits(paddr);
+
+    fence();
     // barrier(); // For memory
     flush_dcache_range(); // TX ring dma desc
+    debug!(
+        "Send packet[{}] len: {}, addr: {:#x}, DmaDesc: {:#x?}",
+        tx_head, length, macb.send_buffers[tx_head], macb.tx_ring[tx_head]
+    );
+
     writev(
         (MACB_IOBASE + MACB_NCR) as *mut u32,
         (1 << MACB_TE_OFFSET) | (1 << MACB_RE_OFFSET) | (1 << MACB_TSTART_OFFSET),
@@ -404,6 +439,7 @@ pub fn macb_send(macb: &mut MacbDevice, packet: &[u8]) -> i32 {
      * re-use the transmit buffer as soon as we return...
      */
     for i in 0..=MACB_TX_TIMEOUT {
+        fence();
         //barrier();
         invalidate_dcache_range(); // TX ring dma desc
         ctrl = macb.tx_ring[tx_head].ctrl;
@@ -414,6 +450,7 @@ pub fn macb_send(macb: &mut MacbDevice, packet: &[u8]) -> i32 {
             if ctrl & (1 << MACB_TX_BUF_EXHAUSTED_OFFSET) != 0 {
                 info!("TX buffers exhausted in mid frame");
             }
+            debug!("Tx {} desc.ctrl = {:#x}", tx_head, ctrl);
             break;
         }
         usdelay(1);
@@ -457,12 +494,12 @@ pub fn macb_recv(macb: &mut MacbDevice, packet: &mut [u8]) -> i32 {
 
         if (status & (1 << MACB_RX_EOF_OFFSET)) != 0 {
             // buffer = macb.rx_buffer + macb.rx_buffer_size * macb.rx_tail;
-            let buffer: usize = macb.rx_buffer_dma + macb.rx_buffer_size * macb.rx_tail;
+            let buffer: usize = macb.rx_buffer_dma + macb.buffer_size * macb.rx_tail;
             length = status & RXBUF_FRMLEN_MASK;
 
             invalidate_dcache_range(); // rx_buffer_dma
             if macb.wrapped {
-                let headlen = macb.rx_buffer_size * (MACB_RX_RING_SIZE - macb.rx_tail);
+                let headlen = macb.buffer_size * (MACB_RX_RING_SIZE - macb.rx_tail);
                 let taillen = length - headlen as u32;
                 /*
                 memcpy((void *)net_rx_packets[0],
@@ -476,10 +513,13 @@ pub fn macb_recv(macb: &mut MacbDevice, packet: &mut [u8]) -> i32 {
                 //*packet = buffer;
                 // 把 DMA buffer中的网络包拷贝出来
                 let rx_packets =
-                    unsafe { slice::from_raw_parts(buffer as *const u8, length as usize) };
+                    unsafe { slice::from_raw_parts(phys_to_virt(buffer) as *const u8, length as usize) };
                 packet[..length as usize].copy_from_slice(rx_packets);
             }
-            info!("Recv packets count: {}, length: {}, {:#x?}", count, length, macb.rx_ring[indesc]);
+            info!(
+                "Recv packet[{}] count: {}, length: {}, {:#x?}",
+                indesc, count, length, macb.rx_ring[indesc]
+            );
 
             if (macb.config.hw_dma_cap & HW_DMA_CAP_64B) != 0 {
                 if !flag {
@@ -507,6 +547,7 @@ pub fn macb_recv(macb: &mut MacbDevice, packet: &mut [u8]) -> i32 {
                 next_rx_tail = 0;
             }
         }
+        fence();
         // barrier();
     } // loop
 }
@@ -528,7 +569,7 @@ fn reclaim_rx_buffers(macb: &mut MacbDevice, new_tail: usize) {
         }
         macb.rx_ring[count].addr &= !(1 << MACB_RX_USED_OFFSET);
         i += 1;
-        if i > MACB_RX_RING_SIZE {
+        if i >= MACB_RX_RING_SIZE {
             i = 0;
         }
     }
@@ -541,6 +582,7 @@ fn reclaim_rx_buffers(macb: &mut MacbDevice, new_tail: usize) {
         macb.rx_ring[count].addr &= !(1 << MACB_RX_USED_OFFSET);
         i += 1;
     }
+    fence();
     // barrier();
     flush_dcache_range(); // RX ring dma
     macb.rx_tail = new_tail;
@@ -656,6 +698,8 @@ fn macb_phy_init(macb: &mut MacbDevice, name: &str) -> i32 {
         ncfgr |= (1 << MACB_FD_OFFSET);
     }
     writev((MACB_IOBASE + MACB_NCFGR) as *mut u32, ncfgr);
+    fence();
+    
     0
 }
 
@@ -784,10 +828,7 @@ fn phy_config() {
 }
 
 pub fn macb_mdio_write(phy_adr: u32, reg: u32, value: u16) {
-    info!(
-        "mdio write phy_adr: {:#x}, reg: {:#x}, value: {:#x}",
-        phy_adr, reg, value
-    );
+    //info!("mdio write phy_adr: {:#x}, reg: {:#x}, value: {:#x}", phy_adr, reg, value);
     let mut netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl |= 1 << MACB_MPE_OFFSET;
     writev((MACB_IOBASE + MACB_NCR) as *mut u32, netctl);
@@ -826,10 +867,7 @@ pub fn macb_mdio_read(phy_adr: u32, reg: u32) -> u16 {
 
     frame = readv((MACB_IOBASE + MACB_MAN) as *const u32);
 
-    info!(
-        "mdio read phy_adr: {:#x}, reg: {:#x}, frame: {:#x}",
-        phy_adr, reg, frame
-    );
+    // info!("mdio read phy_adr: {:#x}, reg: {:#x}, frame: {:#x}", phy_adr, reg, frame);
 
     netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl &= !(1 << MACB_MPE_OFFSET);
@@ -890,7 +928,7 @@ fn gmac_configure_dma(macb: &MacbDevice) -> i32 {
     };
     let GEM_BIT = |offset: u32| -> u32 { 1 << offset };
 
-    let buffer_size: u32 = (macb.rx_buffer_size / RX_BUFFER_MULTIPLE) as u32;
+    let buffer_size: u32 = (macb.buffer_size / RX_BUFFER_MULTIPLE) as u32;
     let neg: i64 = -1;
     let mut dmacfg: u32 = readv((MACB_IOBASE + GEM_DMACFG) as *const u32);
     info!("gmac_configure_dma read GEM_DMACFG: {:#x}", dmacfg);
@@ -957,7 +995,8 @@ fn gmac_init_multi_queues(macb: &mut MacbDevice) {
 
     for i in 1..num_queues {
         info!(
-            "gmac_init_multi_queues TBQP: {:#x}, RBQP: {:#x}",
+            "gmac_init_multi_queues {} TBQP: {:#x}, RBQP: {:#x}",
+            i,
             GEM_TBQP(i - 1),
             GEM_RBQP(i - 1)
         );
