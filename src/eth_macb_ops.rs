@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::slice;
@@ -14,8 +13,8 @@ use crate::phy_mscc::vsc8541_config;
  * by RX_BUFFER_MULTIPLE
  */
 pub const MACB_RX_BUFFER_SIZE: usize = 128;
-//pub const GEM_RX_BUFFER_SIZE: usize = 2048;
-pub const GEM_RX_BUFFER_SIZE: usize = 128;
+pub const GEM_RX_BUFFER_SIZE: usize = 2048;
+//pub const GEM_RX_BUFFER_SIZE: usize = 128;
 
 pub const RX_BUFFER_MULTIPLE: usize = 64;
 
@@ -27,8 +26,7 @@ pub const MACB_AUTONEG_TIMEOUT: u32 = 5000000;
 
 pub const HW_DMA_CAP_32B: u32 = 0;
 pub const HW_DMA_CAP_64B: u32 = 1;
-//pub const DMA_DESC_SIZE: usize = 16;
-pub const DMA_DESC_SIZE: usize = 8;
+pub const DMA_DESC_SIZE: usize = 16;
 
 pub const RXBUF_FRMLEN_MASK: u32 = 0x00000fff;
 pub const TXBUF_FRMLEN_MASK: u32 = 0x000007ff;
@@ -128,33 +126,7 @@ pub struct MacbConfig {
     usrio_clken: u32,
 }
 
-/// 注意: 请在自定义操作系统中实现该结构体
-pub struct MEM;
-impl MemMapping for MEM {
-    fn dma_alloc_coherent(pages: usize) -> usize {
-        info!("dma_alloc_coherent pages = {}", pages);
-        let paddr: Box<[u8]> = if pages == 32 {
-            Box::new([0; 4096 * 32])
-        } else if pages == 16 {
-            Box::new([0; 4096 * 16])
-        } else if pages == 8 {
-            Box::new([0; 4096 * 8])
-        } else {
-            Box::new([0; 4096])
-        };
-
-        let paddr = Box::into_raw(paddr) as *const u8 as usize;
-        info!("dma_alloc_coherent {} pages @ paddr: {:#x}", pages, paddr);
-        paddr
-    }
-
-    fn dma_free_coherent(paddr: usize, pages: usize) {
-        warn!("dma_free_coherent unimplemented !");
-    }
-}
-
-//pub fn macb_start(macb: &mut MacbDevice, name: &str) -> i32 {
-pub fn macb_start<'a>() -> MacbDevice<'a> {
+pub fn macb_start<'a, M: MemMapping>() -> MacbDevice<'a> {
     let buffer_size = GEM_RX_BUFFER_SIZE;
     let name = "ethernet@10090000";
 
@@ -179,11 +151,11 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
     // dma_alloc_coherent  申请一致性内存，一般为连续物理内存且不cache, 或dcache line对齐
 
     let alloc_tx_ring_pages =
-        ((MACB_TX_RING_SIZE * DMA_DESC_SIZE) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
+        ((MACB_TX_RING_SIZE * DMA_DESC_SIZE) + (M::PAGE_SIZE - 1)) / M::PAGE_SIZE;
     let alloc_rx_ring_pages =
-        ((MACB_RX_RING_SIZE * DMA_DESC_SIZE) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
-    let tx_ring_dma = MEM::dma_alloc_coherent(alloc_tx_ring_pages);
-    let rx_ring_dma = MEM::dma_alloc_coherent(alloc_rx_ring_pages);
+        ((MACB_RX_RING_SIZE * DMA_DESC_SIZE) + (M::PAGE_SIZE - 1)) / M::PAGE_SIZE;
+    let tx_ring_dma = M::dma_alloc_coherent(alloc_tx_ring_pages);
+    let rx_ring_dma = M::dma_alloc_coherent(alloc_rx_ring_pages);
 
     let tx_ring = unsafe {
         slice::from_raw_parts_mut(
@@ -204,8 +176,8 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
 
     // 一起申请所有RX内存
     let alloc_rx_buffer_pages =
-        ((MACB_RX_RING_SIZE * buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
-    let rx_buffer_dma: usize = MEM::dma_alloc_coherent(alloc_rx_buffer_pages);
+        ((MACB_RX_RING_SIZE * buffer_size) + (M::PAGE_SIZE - 1)) / M::PAGE_SIZE;
+    let rx_buffer_dma: usize = M::dma_alloc_coherent(alloc_rx_buffer_pages);
 
     info!("Set ring desc buffer for RX");
     let mut count = 0;
@@ -233,8 +205,8 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
 
     // 一起申请所有TX内存
     let alloc_tx_buffer_pages =
-        ((MACB_TX_RING_SIZE * buffer_size) + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE;
-    let tx_buffer_dma: usize = MEM::dma_alloc_coherent(alloc_tx_buffer_pages);
+        ((MACB_TX_RING_SIZE * buffer_size) + (M::PAGE_SIZE - 1)) / M::PAGE_SIZE;
+    let tx_buffer_dma: usize = M::dma_alloc_coherent(alloc_tx_buffer_pages);
     info!("Set ring desc buffer for TX");
     count = 0;
     paddr = tx_buffer_dma as u64;
@@ -268,7 +240,7 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
     );
 
     let dummy_desc_dma =
-        MEM::dma_alloc_coherent((1 * DMA_DESC_SIZE + (MEM::PAGE_SIZE - 1)) / MEM::PAGE_SIZE);
+        M::dma_alloc_coherent((1 * DMA_DESC_SIZE + (M::PAGE_SIZE - 1)) / M::PAGE_SIZE);
     let dummy_desc = unsafe {
         slice::from_raw_parts_mut(
             dummy_desc_dma as *mut DmaDesc,
@@ -378,6 +350,11 @@ pub fn macb_start<'a>() -> MacbDevice<'a> {
     );
     fence();
 
+    // check tx status
+    let nsr = readv((MACB_IOBASE + MACB_NSR) as *const u32);
+    let tsr = readv((MACB_IOBASE + MACB_TSR) as *const u32);
+    info!("MACB_NSR: {:#x}, MACB_TSR: {:#x}", nsr, tsr);
+
     // 预防丢失首个TX包
     msdelay(90);
 
@@ -434,6 +411,9 @@ pub fn macb_send(macb: &mut MacbDevice, packet: &[u8]) -> i32 {
         (1 << MACB_TE_OFFSET) | (1 << MACB_RE_OFFSET) | (1 << MACB_TSTART_OFFSET),
     );
 
+    let tsr = readv((MACB_IOBASE + MACB_TSR) as *const u32);
+    debug!("Tx MACB_TSR = {:#x}", tsr);
+
     /*
      * I guess this is necessary because the networking core may
      * re-use the transmit buffer as soon as we return...
@@ -454,6 +434,7 @@ pub fn macb_send(macb: &mut MacbDevice, packet: &[u8]) -> i32 {
             break;
         }
         usdelay(1);
+
         if i == MACB_TX_TIMEOUT {
             warn!("TX timeout");
         }
@@ -744,7 +725,7 @@ fn macb_phy_reset(macb: &MacbDevice, name: &str) {
         if (status & BMSR_ANEGCOMPLETE) != 0 {
             break;
         }
-        usdelay(100);
+        usdelay(200);
     }
 
     if (status & BMSR_ANEGCOMPLETE) != 0 {
@@ -867,7 +848,7 @@ pub fn macb_mdio_read(phy_adr: u32, reg: u32) -> u16 {
 
     frame = readv((MACB_IOBASE + MACB_MAN) as *const u32);
 
-    // info!("mdio read phy_adr: {:#x}, reg: {:#x}, frame: {:#x}", phy_adr, reg, frame);
+    //info!("mdio read phy_adr: {:#x}, reg: {:#x}, frame: {:#x}", phy_adr, reg, frame);
 
     netctl = readv((MACB_IOBASE + MACB_NCR) as *const u32);
     netctl &= !(1 << MACB_MPE_OFFSET);

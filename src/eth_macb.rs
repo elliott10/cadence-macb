@@ -30,7 +30,7 @@ pub trait MemMapping {
     fn dma_free_coherent(paddr: usize, pages: usize);
 }
 
-pub fn open<'a>() -> Result<MacbDevice<'a>, i32> {
+pub fn open<'a, M: MemMapping>(mac: &[u8; 6]) -> Result<MacbDevice<'a>, i32> {
     // device_probe
 
     // macb_eth_of_to_plat(); check iobase addr
@@ -38,13 +38,13 @@ pub fn open<'a>() -> Result<MacbDevice<'a>, i32> {
     // ethernet@10090000
     clk_set_defaults(0);
 
-    macb_eth_probe();
+    macb_eth_probe(mac);
 
     // eth0: ethernet@10090000
 
 
     // 准备每次的收发包
-    let macb = macb_start();
+    let macb = macb_start::<M>();
     Ok(macb)
 }
 
@@ -84,7 +84,7 @@ fn sifive_prci_set_rate(rate: u64) -> i32 {
     0
 }
 
-fn macb_eth_probe() {
+fn macb_eth_probe(mac: &[u8; 6]) {
     let phy_mode = "gmii";
 
     // is_big_endian ?
@@ -96,7 +96,7 @@ fn macb_eth_probe() {
     // Check that the Ethernet address (MAC) is not 00:00:00:00:00:00,
     // is not a multicast address, and is not FF:FF:FF:FF:FF:FF;
     // Ethernet MAC address: 70:b3:d5:92:fa:99
-    let mac: [u8; 6] = [0x70, 0xb3, 0xd5, 0x92, 0xfa, 0x99];
+    // let mac: [u8; 6] = [0x70, 0xb3, 0xd5, 0x92, 0xfa, 0x99];
     macb_write_hwaddr(&mac);
 }
 
@@ -293,20 +293,22 @@ pub fn readv<T>(src: *const T) -> T {
     unsafe { core::ptr::read_volatile(phys_to_virt(src as usize) as *const T) }
 }
 
+/*
 pub fn writev(dst: *mut u32, value: u32) {
-    //debug!("write_volatile {:#x} = {:#x}", dst as usize, value);
+    debug!("write_volatile {:#x} = {:#x}", dst as usize, value);
     unsafe {
         core::ptr::write_volatile(dst, value);
     }
-}
-/*
+}*/
+
 pub fn writev<T>(dst: *mut T, value: T) {
     unsafe {
         core::ptr::write_volatile(phys_to_virt(dst as usize) as *mut T, value);
     }
 }
-*/
 
+#[linkage = "weak"]
+#[export_name = "phys_to_virt"]
 pub fn phys_to_virt(addr: usize) -> usize {
     addr
 }
