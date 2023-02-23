@@ -741,6 +741,7 @@ fn phy_connect_dev(macb: &MacbDevice) {
     let phydev_flags = 0;
 
     let phydev = 0xff;
+    #[allow(unused_comparisons)]
     let mask: u32 = if phydev_addr >= 0 {
         1 << phydev_addr
     } else {
@@ -790,10 +791,12 @@ fn phy_reset(phydev_addr: u32, _interface: PhyInterfaceMode, phydev_flags: u32) 
     while ((reg & BMCR_RESET as u16) != 0) && (timeout != 0) {
         timeout -= 1;
         reg = macb_mdio_read(phydev_addr, MII_BMCR);
+        /*
         if reg < 0 {
             error!("PHY status read failed");
             return -1;
         }
+        */
         usdelay(1000);
     }
     if (reg & BMCR_RESET as u16) != 0 {

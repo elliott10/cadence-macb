@@ -599,9 +599,11 @@ pub fn genphy_config_aneg(phydev_addr: u32) -> i32 {
     if result == 0 {
         // Advertisment hasn't changed, but maybe aneg was never on to begin with?  Or maybe phy was isolated?
         let ctl = macb_mdio_read(phydev_addr, MII_BMCR) as u32;
+        /*
         if ctl < 0 {
             return ctl as i32;
         }
+        */
         if (((ctl & BMCR_ANENABLE) == 0) || ((ctl & BMCR_ISOLATE) != 0)) {
             // do restart aneg
             result = 1;
@@ -655,9 +657,11 @@ fn genphy_config_advert(
     /* Setup standard advertisement */
     let mut adv = macb_mdio_read(phydev_addr, MII_ADVERTISE) as u32;
     let mut oldadv = adv;
+    /*
     if adv < 0 {
         return adv as i32;
     }
+    */
 
     adv &= !(ADVERTISE_ALL | ADVERTISE_100BASE4 | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM);
     if (advertise & ADVERTISED_10baseT_Half) != 0 {
@@ -691,9 +695,11 @@ fn genphy_config_advert(
     }
 
     let bmsr: u32 = macb_mdio_read(phydev_addr, MII_BMSR) as u32;
+    /*
     if bmsr < 0 {
         return bmsr as i32;
     }
+    */
     /* Per 802.3-2008, Section 22.2.4.2.16 Extended status all
      * 1000Mbits/sec capable PHYs shall have the BMSR_ESTATEN bit set to a
      * logical 1.
@@ -705,9 +711,11 @@ fn genphy_config_advert(
     /* Configure gigabit if it's supported */
     adv = macb_mdio_read(phydev_addr, MII_CTRL1000) as u32;
     oldadv = adv;
+    /*
     if adv < 0 {
         return adv as i32;
     }
+    */
     adv &= !(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
     if (phydev_supported & (SUPPORTED_1000baseT_Half | SUPPORTED_1000baseT_Full)) != 0 {
         if (advertise & SUPPORTED_1000baseT_Half) != 0 {

@@ -1,7 +1,7 @@
 # Cadence Macb ethernet driver
 cadence-macb ethernet Rust driver on SiFive FU740 board.
 
-### How to use
+### Quick Start
 
 Initialize ethernet driver
 ```
